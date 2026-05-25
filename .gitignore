@@ -1,0 +1,32 @@
+# Xcode
+build/
+DerivedData/
+*.xcuserstate
+*.xcuserdatad
+xcuserdata/
+*.xccheckout
+*.moved-aside
+*.hmap
+*.ipa
+*.dSYM.zip
+*.dSYM
+*.swp
+
+# Swift Package Manager
+.build/
+Packages/
+Package.resolved
+*.xcodeproj/project.xcworkspace/
+*.xcodeproj/xcuserdata/
+.swiftpm/
+
+# CocoaPods (not used, but excluded defensively)
+Pods/
+*.xcworkspace
+
+# macOS
+.DS_Store
+
+# Tooling
+/tmp/
+*.log
