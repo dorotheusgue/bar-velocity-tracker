@@ -1,0 +1,100 @@
+import {
+  BarChart,
+  Bar,
+  XAxis,
+  YAxis,
+  ResponsiveContainer,
+  Cell,
+  ReferenceLine,
+} from 'recharts';
+import type { SetSummary } from '../types';
+
+interface Props {
+  open: boolean;
+  summary: SetSummary | null;
+  onClose: () => void;
+  onSave: () => void;
+}
+
+export default function SetSummarySheet({ open, summary, onClose, onSave }: Props) {
+  if (!open || !summary) return null;
+
+  const maxV = Math.max(0.5, ...summary.reps.map((r) => r.peakConcentricVelocity));
+
+  return (
+    <div className="sheet" role="dialog" aria-modal="true">
+      <header className="sheet__header">
+        <h2>Set Summary</h2>
+        <button type="button" onClick={onClose}>
+          Close
+        </button>
+      </header>
+
+      <div className="summary-stats">
+        <Stat label="Reps" value={String(summary.reps.length)} />
+        <Stat label="Avg MCV" value={summary.averageMCV.toFixed(2)} unit="m/s" />
+        <Stat label="Peak" value={summary.averagePeak.toFixed(2)} unit="m/s" />
+        <Stat label="V-Loss" value={`${summary.velocityLossPercent.toFixed(1)}%`} />
+      </div>
+
+      <h3 className="summary-section-title">Mean Concentric Velocity</h3>
+      <div className="summary-chart">
+        <ResponsiveContainer width="100%" height={220}>
+          <BarChart
+            data={summary.reps.map((r) => ({
+              index: r.index,
+              mcv: Number(r.meanConcentricVelocity.toFixed(3)),
+              id: r.id,
+            }))}
+          >
+            <XAxis dataKey="index" stroke="#888" />
+            <YAxis domain={[0, Number((maxV * 1.2).toFixed(2))]} stroke="#888" />
+            <ReferenceLine y={summary.targetVelocity} stroke="#32c759" strokeDasharray="4 4" />
+            <Bar dataKey="mcv" radius={[4, 4, 0, 0]}>
+              {summary.reps.map((r) => (
+                <Cell key={r.id} fill={r.id === summary.bestRepId ? '#32c759' : '#3372ff'} />
+              ))}
+            </Bar>
+          </BarChart>
+        </ResponsiveContainer>
+      </div>
+
+      <h3 className="summary-section-title">Reps</h3>
+      <ul className="summary-reps">
+        {summary.reps.map((rep) => (
+          <li
+            key={rep.id}
+            className={rep.id === summary.bestRepId ? 'summary-reps__item summary-reps__item--best' : 'summary-reps__item'}
+          >
+            <span className="summary-reps__index">#{rep.index}</span>
+            <span className="summary-reps__mcv">{rep.meanConcentricVelocity.toFixed(2)} m/s</span>
+            <span className="summary-reps__aux">peak {rep.peakConcentricVelocity.toFixed(2)}</span>
+            <span className="summary-reps__aux">{rep.rangeOfMotion.toFixed(2)} m</span>
+            <span className="summary-reps__aux">{rep.concentricDuration.toFixed(2)} s</span>
+          </li>
+        ))}
+      </ul>
+
+      <footer className="sheet__footer">
+        <button type="button" onClick={onClose}>
+          Discard
+        </button>
+        <button type="button" className="primary" onClick={onSave}>
+          Save Set
+        </button>
+      </footer>
+    </div>
+  );
+}
+
+function Stat({ label, value, unit }: { label: string; value: string; unit?: string }) {
+  return (
+    <div className="stat">
+      <span className="stat__label">{label}</span>
+      <span className="stat__value">
+        {value}
+        {unit && <span className="stat__unit"> {unit}</span>}
+      </span>
+    </div>
+  );
+}
