@@ -17,12 +17,16 @@ export async function loadVideoFile(
 ): Promise<VideoFileHandle> {
   const url = URL.createObjectURL(file);
 
+  // Override the JSX `autoPlay` attribute. Autoplaying then immediately
+  // pausing produces a play/pause race that leaves Safari with a black canvas.
+  video.autoplay = false;
   video.srcObject = null;
   video.src = url;
   video.loop = false;
   video.muted = true;
   video.controls = false;
   video.setAttribute('playsinline', 'true');
+  video.load();
 
   try {
     await waitForVideoReady(video);
@@ -31,12 +35,11 @@ export async function loadVideoFile(
     throw e;
   }
 
-  video.pause();
-  try {
-    video.currentTime = 0;
-  } catch {
-    // Some browsers throw if metadata isn't fully loaded; ignore.
-  }
+  // Force the browser to decode and paint the first frame. iOS Safari (and
+  // sometimes Chrome on Android) shows a black frame for a paused video at
+  // currentTime = 0 until play() is called; a tiny seek + waiting for the
+  // `seeked` event makes the frame visible.
+  await paintFirstFrame(video);
 
   return {
     width: video.videoWidth,
@@ -69,5 +72,30 @@ function waitForVideoReady(video: HTMLVideoElement): Promise<void> {
     };
     video.addEventListener('loadeddata', onReady, { once: true });
     video.addEventListener('error', onError, { once: true });
+  });
+}
+
+function paintFirstFrame(video: HTMLVideoElement): Promise<void> {
+  return new Promise<void>((resolve) => {
+    let settled = false;
+    const finish = () => {
+      if (settled) return;
+      settled = true;
+      video.removeEventListener('seeked', finish);
+      clearTimeout(timeoutId);
+      resolve();
+    };
+    video.addEventListener('seeked', finish);
+    const target =
+      Number.isFinite(video.duration) && video.duration > 0.1 ? 0.04 : 0;
+    try {
+      video.currentTime = target;
+    } catch {
+      finish();
+      return;
+    }
+    // Some browsers won't fire `seeked` if currentTime didn't actually change;
+    // unblock after a short timeout so we never hang the loader.
+    const timeoutId = window.setTimeout(finish, 1200);
   });
 }

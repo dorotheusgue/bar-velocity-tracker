@@ -45,6 +45,8 @@ export default function CalibrationOverlay({
 
   if (!visible) return null;
 
+  const hasVideoSource = videoWidth > 0 && videoHeight > 0;
+
   function handlePointer(event: React.PointerEvent<HTMLDivElement>) {
     const target = event.target as HTMLElement;
     // Ignore taps that landed on the chrome (header buttons, footer inputs).
@@ -86,11 +88,13 @@ export default function CalibrationOverlay({
     setBVideo(null);
   }
 
-  const hint = !a
-    ? 'Tap one collar of the bar'
-    : !b
-      ? 'Tap the other collar'
-      : 'Set the bar length below, then Save';
+  const hint = !hasVideoSource
+    ? 'Start the camera or upload a video first'
+    : !a
+      ? 'Tap one collar of the bar'
+      : !b
+        ? 'Tap the other collar'
+        : 'Set the bar length below, then Save';
 
   return (
     <div ref={containerRef} className="cal-overlay" onPointerDown={handlePointer}>
