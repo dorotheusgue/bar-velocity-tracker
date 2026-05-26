@@ -358,14 +358,17 @@ export class TrainingEngine {
     zuptVelocityThreshold?: number;
     zuptDuration?: number;
     trackerMinConfidence?: number;
+    trackerColorWeight?: number;
   }) {
     if (opts.processNoise != null) this.tracker.processNoise = opts.processNoise;
     if (opts.measurementNoise != null) this.tracker.measurementNoise = opts.measurementNoise;
     if (opts.zuptVelocityThreshold != null)
       this.kinematics.zuptVelocityThreshold = opts.zuptVelocityThreshold;
     if (opts.zuptDuration != null) this.kinematics.zuptDuration = opts.zuptDuration;
-    if (opts.trackerMinConfidence != null && this.vision.kind === 'template') {
-      (this.vision as TemplateTrackerPipeline).setMinConfidence(opts.trackerMinConfidence);
+    if (this.vision.kind === 'template') {
+      const v = this.vision as TemplateTrackerPipeline;
+      if (opts.trackerMinConfidence != null) v.setMinConfidence(opts.trackerMinConfidence);
+      if (opts.trackerColorWeight != null) v.setColorWeight(opts.trackerColorWeight);
     }
   }
 

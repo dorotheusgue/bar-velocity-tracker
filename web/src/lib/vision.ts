@@ -46,6 +46,14 @@ export class TemplateTrackerPipeline implements VisionPipeline {
     return this.tracker.minConfidence;
   }
 
+  setColorWeight(value: number) {
+    this.tracker.colorWeight = value;
+  }
+
+  get colorWeight(): number {
+    return this.tracker.colorWeight;
+  }
+
   setTrackingPoint(point: TemplatePoint, ctx: CanvasRenderingContext2D): boolean {
     return this.tracker.initialize(ctx, point);
   }

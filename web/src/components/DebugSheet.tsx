@@ -21,25 +21,31 @@ interface Tuning {
   zuptVelocityThreshold: number;
   zuptDuration: number;
   trackerMinConfidence: number;
+  trackerColorWeight: number;
 }
 
-const TUNING_KEY = 'bvt.tuning.v2';
+const TUNING_KEY = 'bvt.tuning.v3';
 
 function loadTuning(): Tuning {
   const raw = localStorage.getItem(TUNING_KEY);
   if (raw) {
     try {
-      return JSON.parse(raw) as Tuning;
+      return { ...defaultTuning(), ...(JSON.parse(raw) as Partial<Tuning>) };
     } catch {
       /* ignore */
     }
   }
+  return defaultTuning();
+}
+
+function defaultTuning(): Tuning {
   return {
     processNoise: 0.1,
     measurementNoise: 5.0,
     zuptVelocityThreshold: 0.02,
     zuptDuration: 0.15,
-    trackerMinConfidence: 0.6,
+    trackerMinConfidence: 0.55,
+    trackerColorWeight: 2.5,
   };
 }
 
@@ -189,15 +195,26 @@ export default function DebugSheet(props: Props) {
           </p>
         )}
         {state.visionMode === 'template' && (
-          <Slider
-            label="Min confidence"
-            value={tuning.trackerMinConfidence}
-            min={0.3}
-            max={0.9}
-            step={0.05}
-            format={(v) => `${(v * 100).toFixed(0)}%`}
-            onChange={(v) => setTuning({ ...tuning, trackerMinConfidence: v })}
-          />
+          <>
+            <Slider
+              label="Min confidence"
+              value={tuning.trackerMinConfidence}
+              min={0.3}
+              max={0.9}
+              step={0.05}
+              format={(v) => `${(v * 100).toFixed(0)}%`}
+              onChange={(v) => setTuning({ ...tuning, trackerMinConfidence: v })}
+            />
+            <Slider
+              label="Colour weight"
+              value={tuning.trackerColorWeight}
+              min={0}
+              max={5}
+              step={0.25}
+              format={(v) => (v === 0 ? 'off (grayscale only)' : `${v.toFixed(2)}×`)}
+              onChange={(v) => setTuning({ ...tuning, trackerColorWeight: v })}
+            />
+          </>
         )}
       </section>
 
