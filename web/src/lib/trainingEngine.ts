@@ -1,4 +1,5 @@
 import { startCamera, type CameraHandle } from './camera';
+import { loadVideoFile, type VideoFileHandle } from './videoFile';
 import { CocoSsdBarDetector, type BarDetector } from './detector';
 import { BarTracker } from './barTracker';
 import { CalibrationManager } from './calibration';
@@ -6,6 +7,8 @@ import { KinematicsEngine } from './kinematics';
 import { RepDetector } from './repDetector';
 import { MetricsEngine, type MetricsSnapshot } from './metrics';
 import type { BarDetection, BarPosition, Rep, SetSummary } from '../types';
+
+export type MediaMode = 'live' | 'file';
 
 export interface TrainingState {
   isCameraReady: boolean;
@@ -25,17 +28,24 @@ export interface TrainingState {
   cameraWidth: number;
   cameraHeight: number;
   fps: number;
+  mediaMode: MediaMode;
+  filename: string | null;
+  isPaused: boolean;
+  currentTime: number;
+  duration: number;
 }
 
 const NO_BAR_WARNING_FRAMES = 60;
+const SEEK_JUMP_SECONDS = 0.5;
 
 /**
- * Owns the camera + detection loop and the per-frame data flow:
+ * Owns the camera/file + detection loop and the per-frame data flow:
  *   frame → detector → tracker → kinematics → rep detector → metrics
  *
- * Exposes a state snapshot the React layer can re-render off, plus event
- * callbacks for transient things (new rep, set complete). Survives React
- * re-renders by living in a ref.
+ * The same loop drives both live camera streams and uploaded video files —
+ * we just swap which `MediaStream`/object-URL is backing the <video> and
+ * use `video.currentTime` as the per-frame timestamp so velocities stay
+ * correct regardless of playback speed.
  */
 export class TrainingEngine {
   readonly calibration = new CalibrationManager();
@@ -47,17 +57,18 @@ export class TrainingEngine {
 
   private video: HTMLVideoElement | null = null;
   private camera: CameraHandle | null = null;
+  private file: VideoFileHandle | null = null;
   private loopId: number | null = null;
   private detecting = false;
   private framesSinceDetection = 0;
   private framesProcessed = 0;
   private fpsWindowStart = 0;
+  private lastProcessedTime = -1;
 
   private listeners: Set<(state: TrainingState) => void> = new Set();
   private repListeners: Set<(rep: Rep) => void> = new Set();
   private summaryListeners: Set<(s: SetSummary) => void> = new Set();
 
-  // App-level tuning that the UI binds to.
   exerciseName = 'Back Squat';
   loadKg = 0;
   targetVelocity = 0.6;
@@ -80,6 +91,11 @@ export class TrainingEngine {
     cameraWidth: 0,
     cameraHeight: 0,
     fps: 0,
+    mediaMode: 'live',
+    filename: null,
+    isPaused: true,
+    currentTime: 0,
+    duration: 0,
   };
 
   constructor() {
@@ -107,6 +123,8 @@ export class TrainingEngine {
     });
   }
 
+  // MARK: - Subscriptions
+
   subscribe(listener: (state: TrainingState) => void): () => void {
     this.listeners.add(listener);
     listener(this.state);
@@ -133,8 +151,10 @@ export class TrainingEngine {
     return this.state;
   }
 
+  // MARK: - Source switching
+
   async start(video: HTMLVideoElement, facingMode: 'user' | 'environment' = 'environment') {
-    if (this.state.isRunning) return;
+    this.disposeSources();
     this.video = video;
     try {
       this.camera = await startCamera(video, { facingMode });
@@ -144,20 +164,65 @@ export class TrainingEngine {
     }
     this.tracker.frameWidth = this.camera.width;
     this.tracker.frameHeight = this.camera.height;
-    const resolution = `${this.camera.width}x${this.camera.height}`;
-    this.calibration.load({ facing: this.camera.facingMode, resolution });
+    this.calibration.load({
+      facing: this.camera.facingMode,
+      resolution: `${this.camera.width}x${this.camera.height}`,
+    });
+    this.resetAnalysis();
 
     this.update({
       isCameraReady: true,
       isRunning: true,
+      mediaMode: 'live',
+      filename: null,
       facingMode: this.camera.facingMode,
       cameraWidth: this.camera.width,
       cameraHeight: this.camera.height,
+      isPaused: false,
+      currentTime: 0,
+      duration: 0,
+      lastError: null,
     });
 
-    this.fpsWindowStart = performance.now();
-    this.framesProcessed = 0;
-    this.loop();
+    this.runLoop();
+  }
+
+  async loadFile(video: HTMLVideoElement, file: File) {
+    this.disposeSources();
+    this.video = video;
+    try {
+      this.file = await loadVideoFile(video, file);
+    } catch (e) {
+      this.update({ lastError: String((e as Error).message ?? e) });
+      return;
+    }
+
+    this.tracker.frameWidth = this.file.width;
+    this.tracker.frameHeight = this.file.height;
+    this.calibration.load({
+      facing: 'environment',
+      resolution: `${this.file.width}x${this.file.height}-file`,
+    });
+    this.resetAnalysis();
+
+    this.update({
+      isCameraReady: true,
+      isRunning: true,
+      mediaMode: 'file',
+      filename: this.file.filename,
+      facingMode: 'environment',
+      cameraWidth: this.file.width,
+      cameraHeight: this.file.height,
+      isPaused: true,
+      currentTime: 0,
+      duration: this.file.duration,
+      lastError: null,
+      cameraNotice: this.calibration.metersPerPixel == null
+        ? 'Calibrate (📏) then press play.'
+        : null,
+    });
+
+    this.runLoop();
   }
 
   stop() {
@@ -165,17 +230,50 @@ export class TrainingEngine {
       cancelAnimationFrame(this.loopId);
       this.loopId = null;
     }
-    this.camera?.stop();
-    this.camera = null;
-    this.update({ isRunning: false, isCameraReady: false });
+    this.disposeSources();
+    this.update({
+      isRunning: false,
+      isCameraReady: false,
+      isPaused: true,
+      filename: null,
+      currentTime: 0,
+      duration: 0,
+    });
   }
 
   async toggleCamera() {
     if (!this.video) return;
     const nextFacing = this.state.facingMode === 'environment' ? 'user' : 'environment';
-    this.stop();
     await this.start(this.video, nextFacing);
   }
+
+  // MARK: - Playback (file mode)
+
+  togglePlay() {
+    const v = this.video;
+    if (!v || this.state.mediaMode !== 'file') return;
+    if (v.paused || v.ended) {
+      if (v.ended) v.currentTime = 0;
+      void v.play().catch((e) => this.update({ lastError: `Play failed: ${e}` }));
+    } else {
+      v.pause();
+    }
+  }
+
+  seek(time: number) {
+    const v = this.video;
+    if (!v || this.state.mediaMode !== 'file') return;
+    v.currentTime = Math.max(0, Math.min(time, this.state.duration || time));
+  }
+
+  restart() {
+    const v = this.video;
+    if (!v || this.state.mediaMode !== 'file') return;
+    v.currentTime = 0;
+    this.resetAnalysis();
+  }
+
+  // MARK: - Set lifecycle / tuning
 
   endSet(): SetSummary | null {
     const summary = this.metrics.endSet({
@@ -184,9 +282,7 @@ export class TrainingEngine {
       targetVelocity: this.targetVelocity,
     });
     if (summary) {
-      this.repDetector.reset();
-      this.kinematics.reset();
-      this.tracker.reset();
+      this.resetAnalysis();
       this.update({
         setRepCount: 0,
         repCount: this.repDetector.repCount,
@@ -213,24 +309,57 @@ export class TrainingEngine {
 
   // MARK: - Frame loop
 
+  private runLoop() {
+    this.fpsWindowStart = performance.now();
+    this.framesProcessed = 0;
+    this.lastProcessedTime = -1;
+    if (this.loopId == null) this.loop();
+  }
+
   private loop = () => {
     this.loopId = requestAnimationFrame(this.loop);
     if (!this.video || !this.state.isRunning) return;
-    if (this.detecting) return; // single-flight per frame
 
-    void this.processFrame();
+    const v = this.video;
+    const t = v.currentTime;
+
+    // Reflect playback state so the UI's play/pause/scrub UI tracks the video.
+    if (this.state.mediaMode === 'file') {
+      if (
+        v.paused !== this.state.isPaused ||
+        Math.abs(t - this.state.currentTime) > 0.03 ||
+        (v.duration && v.duration !== this.state.duration)
+      ) {
+        this.update({
+          isPaused: v.paused,
+          currentTime: t,
+          duration: Number.isFinite(v.duration) ? v.duration : this.state.duration,
+        });
+      }
+
+      // Seek detection — large jumps invalidate kinematics state.
+      if (
+        this.lastProcessedTime >= 0 &&
+        (t < this.lastProcessedTime || t - this.lastProcessedTime > SEEK_JUMP_SECONDS)
+      ) {
+        this.resetKinematicsOnly();
+      }
+    }
+
+    if (this.detecting) return;
+    if (t === this.lastProcessedTime) return; // no new frame to process
+    void this.processFrame(t);
   };
 
-  private async processFrame() {
+  private async processFrame(t: number) {
     if (!this.video) return;
     this.detecting = true;
-    const t = performance.now() / 1000;
+    this.lastProcessedTime = t;
     try {
       const detection = await this.detector.detect(this.video, t);
       const position = this.tracker.ingest(detection);
       if (position) this.kinematics.ingest(position);
 
-      // Trigger React updates with the latest state.
       this.framesProcessed += 1;
       const elapsed = (performance.now() - this.fpsWindowStart) / 1000;
       let fps = this.state.fps;
@@ -240,13 +369,9 @@ export class TrainingEngine {
         this.fpsWindowStart = performance.now();
       }
 
-      if (detection) {
-        this.framesSinceDetection = 0;
-      } else {
-        this.framesSinceDetection += 1;
-      }
+      if (detection) this.framesSinceDetection = 0;
+      else this.framesSinceDetection += 1;
 
-      const notice = this.computeCameraNotice();
       this.update({
         detection,
         position,
@@ -254,7 +379,7 @@ export class TrainingEngine {
         isTracking: this.tracker.isTracking,
         phase: this.repDetector.phase,
         repCount: this.repDetector.repCount,
-        cameraNotice: notice,
+        cameraNotice: this.computeNotice(),
         fps,
       });
     } catch (e) {
@@ -264,14 +389,41 @@ export class TrainingEngine {
     }
   }
 
-  private computeCameraNotice(): string | null {
+  // MARK: - Internals
+
+  private resetAnalysis() {
+    this.tracker.reset();
+    this.kinematics.reset();
+    this.repDetector.reset();
+    this.framesSinceDetection = 0;
+    this.lastProcessedTime = -1;
+  }
+
+  private resetKinematicsOnly() {
+    this.tracker.reset();
+    this.kinematics.reset();
+    this.repDetector.reset();
+    this.framesSinceDetection = 0;
+  }
+
+  private disposeSources() {
+    this.camera?.stop();
+    this.camera = null;
+    this.file?.dispose();
+    this.file = null;
+  }
+
+  private computeNotice(): string | null {
+    if (this.state.mediaMode === 'file' && this.calibration.metersPerPixel == null) {
+      return 'Calibrate (📏) then press play.';
+    }
     if (this.framesSinceDetection > NO_BAR_WARNING_FRAMES) {
       return this.calibration.metersPerPixel == null
-        ? 'Tap the ruler to calibrate before lifting.'
+        ? 'Tap 📏 to calibrate before lifting.'
         : 'Bar not visible — re-calibrate if the angle changed.';
     }
     if (this.calibration.metersPerPixel == null) {
-      return 'Tap the ruler to calibrate.';
+      return 'Tap 📏 to calibrate.';
     }
     return null;
   }

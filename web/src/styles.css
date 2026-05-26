@@ -228,11 +228,68 @@ select {
 
 .live__bottom {
   display: flex;
-  justify-content: center;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 10px;
   padding: 12px 12px 24px;
 }
 
+/* Playback controls (file mode) ----------------------------------------- */
+.playback {
+  background: rgba(20, 24, 29, 0.85);
+  backdrop-filter: blur(16px);
+  border-radius: 14px;
+  padding: 8px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.playback__row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.playback__btn {
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  border: 0;
+  background: rgba(255, 255, 255, 0.12);
+  color: #fff;
+  font-size: 16px;
+  display: grid;
+  place-items: center;
+  flex: 0 0 auto;
+}
+
+.playback__btn:active { background: rgba(255, 255, 255, 0.2); }
+
+.playback__scrub {
+  flex: 1;
+  accent-color: var(--accent);
+  min-width: 0;
+}
+
+.playback__time {
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-dim);
+  flex: 0 0 auto;
+}
+
+.playback__filename {
+  font-size: 11px;
+  color: var(--text-dim);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  padding: 0 4px;
+}
+
 .end-set {
+  align-self: center;
   background: rgba(255, 77, 79, 0.9);
   color: #fff;
   border: 0;

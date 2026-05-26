@@ -44,13 +44,35 @@ runtime server is needed.
 
 ## Using the app
 
+Two sources, same pipeline:
+
+**Live camera** (default on launch)
+
 | Tap | What it does |
 |---|---|
 | 📏 | Calibration sheet (tap two collars of a bar of known length) |
 | 🔄 | Toggle front / rear camera |
+| 📁 | Upload a recorded video instead |
 | ⚙️ | Debug panel: Kalman/ZUPT sliders, exercise, load, target velocity |
 | ⏹ End Set | Finalise the current set; opens the summary with **Save** to persist |
-| History tab | Past sessions grouped by day; tap a set to open the chart |
+
+**Uploaded video** (tap 📁, pick any local clip)
+
+| Tap | What it does |
+|---|---|
+| 📏 | Calibrate against the loaded clip (pause first, then tap both collars) |
+| 📷 | Switch back to the live camera |
+| 📁 | Pick a different video |
+| ▶ / ⏸ | Play / pause analysis |
+| ⤺ | Restart from frame 0 (also resets the rep counter) |
+| Scrub | Jump to any point in the clip; analysis resets to avoid bogus velocities |
+| ⏹ End Set | Same as live mode — finalise and save |
+
+Per-frame timestamps come from `video.currentTime`, so velocities stay in real m/s regardless of playback speed — slow-motion phone clips work fine.
+
+**Supported file formats.** Anything the browser can decode. iPhones record HEVC/H.265 in `.mov`; Safari plays these natively, Chrome on Android usually does too, but if a clip fails to load, re-export to MP4/H.264 (most editors and `ffmpeg -c:v libx264` do this).
+
+The History tab is the same for both — past sessions grouped by day; tap a set to open the chart.
 
 ## Detection — the COCO-SSD limitation
 
