@@ -213,6 +213,10 @@ select {
   font-variant-numeric: tabular-nums;
 }
 
+.chip--good { color: var(--good); }
+.chip--warn { color: var(--warn); }
+.chip--bad  { color: var(--bad);  }
+
 .live__notice {
   background: rgba(245, 165, 36, 0.9);
   color: #000;

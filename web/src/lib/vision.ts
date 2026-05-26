@@ -37,6 +37,15 @@ export class TemplateTrackerPipeline implements VisionPipeline {
     return this.tracker.isInitialized;
   }
 
+  /** Forwarded to the underlying tracker so the debug sheet can tune it. */
+  setMinConfidence(value: number) {
+    this.tracker.minConfidence = value;
+  }
+
+  get minConfidence(): number {
+    return this.tracker.minConfidence;
+  }
+
   setTrackingPoint(point: TemplatePoint, ctx: CanvasRenderingContext2D): boolean {
     return this.tracker.initialize(ctx, point);
   }

@@ -46,14 +46,18 @@ export class TemplateTracker {
   private readonly size: number;
   private readonly searchRadiusX: number;
   private readonly searchRadiusY: number;
-  private readonly minConfidence: number;
+  /** Mutable so the debug sheet can tune it live. */
+  minConfidence: number;
   private readonly updateRate: number;
 
   constructor(options: TemplateTrackerOptions = {}) {
-    this.size = options.templateSize ?? 32;
-    this.searchRadiusX = options.searchRadiusX ?? 16;
-    this.searchRadiusY = options.searchRadiusY ?? 28;
-    this.minConfidence = options.minConfidence ?? 0.35;
+    // Defaults skewed toward stability over speed. The earlier 32/16/28/0.35
+    // values were small enough that any vaguely-textured background patch
+    // could score above threshold and steal the lock from the bar.
+    this.size = options.templateSize ?? 48;
+    this.searchRadiusX = options.searchRadiusX ?? 24;
+    this.searchRadiusY = options.searchRadiusY ?? 40;
+    this.minConfidence = options.minConfidence ?? 0.6;
     this.updateRate = options.templateUpdateRate ?? 0;
   }
 

@@ -142,8 +142,8 @@ export default function LiveTraining() {
         }
         hint={
           state.mediaMode === 'file' && !state.isPaused
-            ? 'Pause first, then tap the bar.'
-            : 'Tap the centre of the bar to start tracking.'
+            ? 'Pause first, then tap a plate.'
+            : 'Tap the centre of a plate — bigger, distinctive targets track best.'
         }
         videoWidth={state.cameraWidth}
         videoHeight={state.cameraHeight}
@@ -179,6 +179,11 @@ export default function LiveTraining() {
             >
               📁
             </IconButton>
+            {state.visionMode === 'template' && !state.needsTrackingPoint && (
+              <IconButton aria-label="Re-pick target" onClick={() => engine.retapToTrack()}>
+                🎯
+              </IconButton>
+            )}
           </div>
           <div className="live__meta">
             <strong>{exerciseName}</strong>
@@ -204,6 +209,19 @@ export default function LiveTraining() {
           <div className="live__chips">
             <span className="chip">#{state.repCount}</span>
             <span className="chip">{state.phase}</span>
+            {state.detection && (
+              <span
+                className={`chip ${
+                  state.detection.confidence < 0.55
+                    ? 'chip--bad'
+                    : state.detection.confidence < 0.7
+                      ? 'chip--warn'
+                      : 'chip--good'
+                }`}
+              >
+                conf {(state.detection.confidence * 100).toFixed(0)}%
+              </span>
+            )}
             <span className="chip">
               {isFile ? `${state.duration.toFixed(1)}s clip` : `${state.fps.toFixed(0)} fps`}
             </span>

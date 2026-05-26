@@ -20,9 +20,10 @@ interface Tuning {
   measurementNoise: number;
   zuptVelocityThreshold: number;
   zuptDuration: number;
+  trackerMinConfidence: number;
 }
 
-const TUNING_KEY = 'bvt.tuning.v1';
+const TUNING_KEY = 'bvt.tuning.v2';
 
 function loadTuning(): Tuning {
   const raw = localStorage.getItem(TUNING_KEY);
@@ -38,6 +39,7 @@ function loadTuning(): Tuning {
     measurementNoise: 5.0,
     zuptVelocityThreshold: 0.02,
     zuptDuration: 0.15,
+    trackerMinConfidence: 0.6,
   };
 }
 
@@ -185,6 +187,17 @@ export default function DebugSheet(props: Props) {
           <p className="row" style={{ color: 'var(--text-dim)' }}>
             Loading TensorFlow.js…
           </p>
+        )}
+        {state.visionMode === 'template' && (
+          <Slider
+            label="Min confidence"
+            value={tuning.trackerMinConfidence}
+            min={0.3}
+            max={0.9}
+            step={0.05}
+            format={(v) => `${(v * 100).toFixed(0)}%`}
+            onChange={(v) => setTuning({ ...tuning, trackerMinConfidence: v })}
+          />
         )}
       </section>
 

@@ -43,7 +43,7 @@ export interface TrainingState {
   duration: number;
 }
 
-const NO_BAR_WARNING_FRAMES = 60;
+const NO_BAR_WARNING_FRAMES = 25;
 const SEEK_JUMP_SECONDS = 0.5;
 
 /**
@@ -357,12 +357,38 @@ export class TrainingEngine {
     measurementNoise?: number;
     zuptVelocityThreshold?: number;
     zuptDuration?: number;
+    trackerMinConfidence?: number;
   }) {
     if (opts.processNoise != null) this.tracker.processNoise = opts.processNoise;
     if (opts.measurementNoise != null) this.tracker.measurementNoise = opts.measurementNoise;
     if (opts.zuptVelocityThreshold != null)
       this.kinematics.zuptVelocityThreshold = opts.zuptVelocityThreshold;
     if (opts.zuptDuration != null) this.kinematics.zuptDuration = opts.zuptDuration;
+    if (opts.trackerMinConfidence != null && this.vision.kind === 'template') {
+      (this.vision as TemplateTrackerPipeline).setMinConfidence(opts.trackerMinConfidence);
+    }
+  }
+
+  /**
+   * Drop the current template and ask the UI to prompt for a new tap point.
+   * Called from the 🎯 button so users can recover from drift without waiting
+   * for the lost-track timeout.
+   */
+  retapToTrack() {
+    if (this.vision.kind !== 'template') return;
+    this.vision.reset();
+    this.tracker.reset();
+    this.kinematics.reset();
+    this.repDetector.reset();
+    this.framesSinceDetection = 0;
+    this.lastProcessedTime = -1;
+    this.update({
+      needsTrackingPoint: true,
+      detection: null,
+      position: null,
+      velocity: 0,
+      cameraNotice: 'Tap a plate or the bar to start tracking.',
+    });
   }
 
   // MARK: - Frame loop
@@ -486,11 +512,11 @@ export class TrainingEngine {
   private computeNotice(): string | null {
     if (this.state.visionMode === 'template' && this.state.needsTrackingPoint) {
       return this.calibration.metersPerPixel == null
-        ? 'Calibrate (📏), then tap the bar to start tracking.'
-        : 'Tap the bar to start tracking.';
+        ? 'Calibrate (📏), then tap a plate or the bar.'
+        : 'Tap a plate or the bar to start tracking.';
     }
     if (this.framesSinceDetection > NO_BAR_WARNING_FRAMES) {
-      return 'Lost the bar — tap it again to resume.';
+      return 'Lost the target — tap 🎯 to re-pick it.';
     }
     if (this.calibration.metersPerPixel == null) {
       return 'Tap 📏 to calibrate.';
