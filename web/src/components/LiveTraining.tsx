@@ -125,7 +125,12 @@ export default function LiveTraining() {
   return (
     <div className="live">
       <CameraView ref={videoRef} />
-      <BoundingBoxOverlay detection={state.detection} isTracking={state.isTracking} />
+      <BoundingBoxOverlay
+        box={state.position?.boundingBox ?? null}
+        confidence={state.detection?.confidence ?? 0}
+        label={state.detection?.label}
+        isTracking={state.isTracking}
+      />
 
       <TapToInitOverlay
         visible={

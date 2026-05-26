@@ -498,8 +498,21 @@ export class TrainingEngine {
     return null;
   }
 
+  private rafScheduled = false;
+
+  /**
+   * Coalesces all state mutations within a single animation frame into one
+   * listener notification. Without this, a fast detect→tracker→kinematics→rep
+   * cycle could trigger React renders 60+ times per second from several
+   * different code paths in the same frame.
+   */
   private update(patch: Partial<TrainingState>) {
     this.state = { ...this.state, ...patch };
-    for (const l of this.listeners) l(this.state);
+    if (this.rafScheduled) return;
+    this.rafScheduled = true;
+    requestAnimationFrame(() => {
+      this.rafScheduled = false;
+      for (const l of this.listeners) l(this.state);
+    });
   }
 }

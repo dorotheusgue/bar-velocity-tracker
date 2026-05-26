@@ -10,10 +10,13 @@ export interface BarTrackerOptions {
 
 /**
  * Maintains a rolling history of bar positions and applies a 1D Kalman filter
- * to the vertical channel. Mirrors the iOS `BarTracker`.
+ * to both vertical and horizontal channels. The horizontal smoothing is
+ * mostly cosmetic — kinematics use Y — but it stops the bounding box from
+ * shimmering sideways frame-to-frame.
  */
 export class BarTracker {
-  private kalman: KalmanFilter1D | null = null;
+  private kalmanY: KalmanFilter1D | null = null;
+  private kalmanX: KalmanFilter1D | null = null;
   private historyArr: BarPosition[] = [];
   private misses = 0;
 
@@ -36,19 +39,21 @@ export class BarTracker {
   }
 
   get processNoise() {
-    return this.kalman?.q ?? this.defaultProcessNoise;
+    return this.kalmanY?.q ?? this.defaultProcessNoise;
   }
   set processNoise(value: number) {
     this.defaultProcessNoise = value;
-    if (this.kalman) this.kalman.q = value;
+    if (this.kalmanY) this.kalmanY.q = value;
+    if (this.kalmanX) this.kalmanX.q = value;
   }
 
   get measurementNoise() {
-    return this.kalman?.r ?? this.defaultMeasurementNoise;
+    return this.kalmanY?.r ?? this.defaultMeasurementNoise;
   }
   set measurementNoise(value: number) {
     this.defaultMeasurementNoise = value;
-    if (this.kalman) this.kalman.r = value;
+    if (this.kalmanY) this.kalmanY.r = value;
+    if (this.kalmanX) this.kalmanX.r = value;
   }
 
   get history(): readonly BarPosition[] {
@@ -56,16 +61,13 @@ export class BarTracker {
   }
 
   reset() {
-    this.kalman = null;
+    this.kalmanY = null;
+    this.kalmanX = null;
     this.historyArr = [];
     this.misses = 0;
     this.isTracking = false;
   }
 
-  /**
-   * Fold a new detection into the tracker. Pass `null` for a frame with no
-   * detection — repeated misses flip `isTracking` to false.
-   */
   ingest(detection: BarDetection | null): BarPosition | null {
     if (!detection) {
       this.misses += 1;
@@ -79,23 +81,43 @@ export class BarTracker {
     this.isTracking = true;
 
     // detection.boundingBox uses DOM origin (top-left, y grows down).
-    const yPixel = (detection.boundingBox.y + detection.boundingBox.height / 2) * this.frameHeight;
-    const xPixel = (detection.boundingBox.x + detection.boundingBox.width / 2) * this.frameWidth;
+    const rawY = (detection.boundingBox.y + detection.boundingBox.height / 2) * this.frameHeight;
+    const rawX = (detection.boundingBox.x + detection.boundingBox.width / 2) * this.frameWidth;
 
-    if (!this.kalman) {
-      this.kalman = new KalmanFilter1D(
-        yPixel,
+    if (!this.kalmanY) {
+      this.kalmanY = new KalmanFilter1D(
+        rawY,
         this.defaultProcessNoise,
         this.defaultMeasurementNoise
       );
+      // X gets a heavier measurement noise — bars don't translate horizontally
+      // in normal lifts, so we want hard smoothing on the lateral channel.
+      this.kalmanX = new KalmanFilter1D(
+        rawX,
+        this.defaultProcessNoise * 0.5,
+        this.defaultMeasurementNoise * 2
+      );
     }
-    const smoothedY = this.kalman.update(yPixel);
+    const smoothedY = this.kalmanY.update(rawY);
+    const smoothedX = this.kalmanX!.update(rawX);
+
+    // Reconstruct a smoothed bounding box centred on the smoothed point.
+    // We keep the detection's reported width/height (constant for the template
+    // tracker; variable for COCO-SSD).
+    const bw = detection.boundingBox.width;
+    const bh = detection.boundingBox.height;
+    const smoothedBox = {
+      x: smoothedX / this.frameWidth - bw / 2,
+      y: smoothedY / this.frameHeight - bh / 2,
+      width: bw,
+      height: bh,
+    };
 
     const position: BarPosition = {
       timestamp: detection.timestamp,
       yPixel: smoothedY,
-      xPixel,
-      boundingBox: detection.boundingBox,
+      xPixel: smoothedX,
+      boundingBox: smoothedBox,
       confidence: detection.confidence,
     };
     this.historyArr.push(position);

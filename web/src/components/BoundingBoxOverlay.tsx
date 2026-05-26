@@ -1,19 +1,20 @@
-import type { BarDetection } from '../types';
+import type { BoundingBox } from '../types';
 
 interface Props {
-  detection: BarDetection | null;
+  box: BoundingBox | null;
+  confidence: number;
+  label?: string;
   isTracking: boolean;
 }
 
 /**
- * Draws the latest detection's bounding box. Coordinates are normalised 0..1
- * with the DOM convention (origin top-left), so they render correctly when the
- * underlying <video> is `object-fit: cover` (which only crops, never warps).
+ * Renders the smoothed bar position as a bounding box. No CSS transition —
+ * at 30–60 fps a transition just makes the box visibly lag the actual bar.
+ * The Kalman in BarTracker already smooths the trajectory.
  */
-export default function BoundingBoxOverlay({ detection, isTracking }: Props) {
-  if (!detection) return null;
+export default function BoundingBoxOverlay({ box, confidence, label, isTracking }: Props) {
+  if (!box) return null;
 
-  const { x, y, width, height } = detection.boundingBox;
   const color = isTracking ? '#32c759' : '#ff9f0a';
 
   return (
@@ -21,15 +22,15 @@ export default function BoundingBoxOverlay({ detection, isTracking }: Props) {
       <div
         className="bbox"
         style={{
-          left: `${x * 100}%`,
-          top: `${y * 100}%`,
-          width: `${width * 100}%`,
-          height: `${height * 100}%`,
+          left: `${box.x * 100}%`,
+          top: `${box.y * 100}%`,
+          width: `${box.width * 100}%`,
+          height: `${box.height * 100}%`,
           borderColor: color,
         }}
       >
         <span className="bbox-label" style={{ background: color }}>
-          {detection.label?.toUpperCase() ?? 'BAR'} {(detection.confidence * 100).toFixed(0)}%
+          {(label ?? 'BAR').toUpperCase()} {(confidence * 100).toFixed(0)}%
         </span>
       </div>
     </div>

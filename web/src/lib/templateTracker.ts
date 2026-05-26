@@ -136,8 +136,24 @@ export class TemplateTracker {
 
     if (bestScore < this.minConfidence) return null;
 
-    const cx = winX + bestOX + half;
-    const cy = winY + bestOY + half;
+    // Subpixel peak refinement: parabolic fit through the best score and its
+    // 4 neighbours. Without this, the reported centre snaps to integer pixels
+    // and the bbox shimmers frame-to-frame.
+    let refinedOX = bestOX;
+    let refinedOY = bestOY;
+    if (bestOX > 0 && bestOX < maxOX && bestOY > 0 && bestOY < maxOY) {
+      const sL = nccAt(this.template, this.templateMean, this.templateStd, window, winW, bestOX - 1, bestOY, this.size);
+      const sR = nccAt(this.template, this.templateMean, this.templateStd, window, winW, bestOX + 1, bestOY, this.size);
+      const sT = nccAt(this.template, this.templateMean, this.templateStd, window, winW, bestOX, bestOY - 1, this.size);
+      const sB = nccAt(this.template, this.templateMean, this.templateStd, window, winW, bestOX, bestOY + 1, this.size);
+      const denomX = sL + sR - 2 * bestScore;
+      const denomY = sT + sB - 2 * bestScore;
+      if (denomX !== 0) refinedOX = bestOX + clamp(0.5 * (sL - sR) / denomX, -0.5, 0.5);
+      if (denomY !== 0) refinedOY = bestOY + clamp(0.5 * (sT - sB) / denomY, -0.5, 0.5);
+    }
+
+    const cx = winX + refinedOX + half;
+    const cy = winY + refinedOY + half;
     this.lastPosition = { x: cx, y: cy };
 
     if (this.updateRate > 0 && bestScore > 0.6) {
@@ -156,6 +172,10 @@ export class TemplateTracker {
       boundingBox: { x: cx - half, y: cy - half, width: this.size, height: this.size },
     };
   }
+}
+
+function clamp(v: number, lo: number, hi: number): number {
+  return v < lo ? lo : v > hi ? hi : v;
 }
 
 // ----- pixel helpers -----------------------------------------------------
