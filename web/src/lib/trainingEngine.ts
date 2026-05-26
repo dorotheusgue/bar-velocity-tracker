@@ -1,6 +1,11 @@
 import { startCamera, type CameraHandle } from './camera';
 import { loadVideoFile, type VideoFileHandle } from './videoFile';
-import { CocoSsdBarDetector, type BarDetector } from './detector';
+import {
+  TemplateTrackerPipeline,
+  CocoSsdPipeline,
+  drawVideoToContext,
+  type VisionPipeline,
+} from './vision';
 import { BarTracker } from './barTracker';
 import { CalibrationManager } from './calibration';
 import { KinematicsEngine } from './kinematics';
@@ -9,12 +14,14 @@ import { MetricsEngine, type MetricsSnapshot } from './metrics';
 import type { BarDetection, BarPosition, Rep, SetSummary } from '../types';
 
 export type MediaMode = 'live' | 'file';
+export type VisionMode = 'template' | 'coco-ssd';
 
 export interface TrainingState {
   isCameraReady: boolean;
   isModelReady: boolean;
   isTracking: boolean;
   isRunning: boolean;
+  needsTrackingPoint: boolean;
   velocity: number;
   repCount: number;
   phase: string;
@@ -29,6 +36,7 @@ export interface TrainingState {
   cameraHeight: number;
   fps: number;
   mediaMode: MediaMode;
+  visionMode: VisionMode;
   filename: string | null;
   isPaused: boolean;
   currentTime: number;
@@ -39,13 +47,11 @@ const NO_BAR_WARNING_FRAMES = 60;
 const SEEK_JUMP_SECONDS = 0.5;
 
 /**
- * Owns the camera/file + detection loop and the per-frame data flow:
- *   frame → detector → tracker → kinematics → rep detector → metrics
+ * Owns the camera/file pipeline and the per-frame loop:
+ *   frame → vision pipeline → tracker → kinematics → rep detector → metrics
  *
- * The same loop drives both live camera streams and uploaded video files —
- * we just swap which `MediaStream`/object-URL is backing the <video> and
- * use `video.currentTime` as the per-frame timestamp so velocities stay
- * correct regardless of playback speed.
+ * Default vision = tap-to-init template tracker (no model download). Optional
+ * COCO-SSD pipeline can be loaded on demand for fully-automatic detection.
  */
 export class TrainingEngine {
   readonly calibration = new CalibrationManager();
@@ -53,7 +59,10 @@ export class TrainingEngine {
   readonly kinematics: KinematicsEngine;
   readonly repDetector: RepDetector;
   readonly metrics = new MetricsEngine();
-  readonly detector: BarDetector;
+
+  /** Offscreen 2D context that the vision pipeline reads pixels from. */
+  private readonly ctx: CanvasRenderingContext2D;
+  private vision: VisionPipeline;
 
   private video: HTMLVideoElement | null = null;
   private camera: CameraHandle | null = null;
@@ -75,9 +84,10 @@ export class TrainingEngine {
 
   private state: TrainingState = {
     isCameraReady: false,
-    isModelReady: false,
+    isModelReady: true, // template tracker has no model to load
     isTracking: false,
     isRunning: false,
+    needsTrackingPoint: true,
     velocity: 0,
     repCount: 0,
     phase: 'idle',
@@ -92,6 +102,7 @@ export class TrainingEngine {
     cameraHeight: 0,
     fps: 0,
     mediaMode: 'live',
+    visionMode: 'template',
     filename: null,
     isPaused: true,
     currentTime: 0,
@@ -99,13 +110,14 @@ export class TrainingEngine {
   };
 
   constructor() {
-    this.detector = new CocoSsdBarDetector();
+    const canvas = document.createElement('canvas');
+    const ctx = canvas.getContext('2d', { willReadFrequently: true });
+    if (!ctx) throw new Error('Canvas 2D context not available');
+    this.ctx = ctx;
+
+    this.vision = new TemplateTrackerPipeline();
     this.kinematics = new KinematicsEngine(this.calibration);
     this.repDetector = new RepDetector(this.kinematics);
-
-    this.detector.ready
-      .then(() => this.update({ isModelReady: true }))
-      .catch((e) => this.update({ lastError: `Model load failed: ${e}` }));
 
     this.repDetector.onRep((rep) => {
       this.metrics.append(rep);
@@ -151,6 +163,51 @@ export class TrainingEngine {
     return this.state;
   }
 
+  // MARK: - Vision pipeline switching
+
+  async setVisionMode(mode: VisionMode) {
+    if (mode === this.state.visionMode) return;
+    this.vision.dispose?.();
+    if (mode === 'coco-ssd') {
+      this.vision = new CocoSsdPipeline();
+      this.update({
+        visionMode: 'coco-ssd',
+        needsTrackingPoint: false,
+        isModelReady: false,
+      });
+      try {
+        await this.vision.ready;
+        this.update({ isModelReady: true });
+      } catch (e) {
+        this.update({ lastError: `Model load failed: ${e}` });
+      }
+    } else {
+      this.vision = new TemplateTrackerPipeline();
+      this.update({
+        visionMode: 'template',
+        needsTrackingPoint: true,
+        isModelReady: true,
+      });
+    }
+    this.resetAnalysis();
+  }
+
+  /**
+   * Seed the template tracker with a tap point. Coordinates are in *video*
+   * pixel space (post-resolution, not DOM). Called by the UI after mapping
+   * the DOM tap location into the underlying video frame.
+   */
+  setTrackingPoint(videoX: number, videoY: number): boolean {
+    if (!this.video || !this.vision.setTrackingPoint) return false;
+    drawVideoToContext(this.video, this.ctx);
+    const ok = this.vision.setTrackingPoint({ x: videoX, y: videoY }, this.ctx);
+    if (ok) {
+      this.update({ needsTrackingPoint: false, cameraNotice: null });
+      this.framesSinceDetection = 0;
+    }
+    return ok;
+  }
+
   // MARK: - Source switching
 
   async start(video: HTMLVideoElement, facingMode: 'user' | 'environment' = 'environment') {
@@ -182,6 +239,8 @@ export class TrainingEngine {
       currentTime: 0,
       duration: 0,
       lastError: null,
+      needsTrackingPoint: this.state.visionMode === 'template',
+      cameraNotice: this.computeNotice(),
     });
 
     this.runLoop();
@@ -217,9 +276,8 @@ export class TrainingEngine {
       currentTime: 0,
       duration: this.file.duration,
       lastError: null,
-      cameraNotice: this.calibration.metersPerPixel == null
-        ? 'Calibrate (📏) then press play.'
-        : null,
+      needsTrackingPoint: this.state.visionMode === 'template',
+      cameraNotice: this.computeNotice(),
     });
 
     this.runLoop();
@@ -323,7 +381,6 @@ export class TrainingEngine {
     const v = this.video;
     const t = v.currentTime;
 
-    // Reflect playback state so the UI's play/pause/scrub UI tracks the video.
     if (this.state.mediaMode === 'file') {
       if (
         v.paused !== this.state.isPaused ||
@@ -337,7 +394,6 @@ export class TrainingEngine {
         });
       }
 
-      // Seek detection — large jumps invalidate kinematics state.
       if (
         this.lastProcessedTime >= 0 &&
         (t < this.lastProcessedTime || t - this.lastProcessedTime > SEEK_JUMP_SECONDS)
@@ -347,7 +403,8 @@ export class TrainingEngine {
     }
 
     if (this.detecting) return;
-    if (t === this.lastProcessedTime) return; // no new frame to process
+    if (t === this.lastProcessedTime) return;
+    if (this.state.needsTrackingPoint) return; // waiting for user tap
     void this.processFrame(t);
   };
 
@@ -356,7 +413,8 @@ export class TrainingEngine {
     this.detecting = true;
     this.lastProcessedTime = t;
     try {
-      const detection = await this.detector.detect(this.video, t);
+      drawVideoToContext(this.video, this.ctx);
+      const detection = await this.vision.detect(this.video, t, this.ctx);
       const position = this.tracker.ingest(detection);
       if (position) this.kinematics.ingest(position);
 
@@ -372,6 +430,11 @@ export class TrainingEngine {
       if (detection) this.framesSinceDetection = 0;
       else this.framesSinceDetection += 1;
 
+      const lostTrack =
+        this.framesSinceDetection > NO_BAR_WARNING_FRAMES &&
+        this.state.visionMode === 'template' &&
+        !this.state.needsTrackingPoint;
+
       this.update({
         detection,
         position,
@@ -381,7 +444,12 @@ export class TrainingEngine {
         repCount: this.repDetector.repCount,
         cameraNotice: this.computeNotice(),
         fps,
+        needsTrackingPoint: lostTrack ? true : this.state.needsTrackingPoint,
       });
+
+      if (lostTrack) {
+        this.vision.reset();
+      }
     } catch (e) {
       this.update({ lastError: String(e) });
     } finally {
@@ -395,8 +463,10 @@ export class TrainingEngine {
     this.tracker.reset();
     this.kinematics.reset();
     this.repDetector.reset();
+    this.vision.reset();
     this.framesSinceDetection = 0;
     this.lastProcessedTime = -1;
+    this.update({ needsTrackingPoint: this.state.visionMode === 'template' });
   }
 
   private resetKinematicsOnly() {
@@ -414,13 +484,13 @@ export class TrainingEngine {
   }
 
   private computeNotice(): string | null {
-    if (this.state.mediaMode === 'file' && this.calibration.metersPerPixel == null) {
-      return 'Calibrate (📏) then press play.';
+    if (this.state.visionMode === 'template' && this.state.needsTrackingPoint) {
+      return this.calibration.metersPerPixel == null
+        ? 'Calibrate (📏), then tap the bar to start tracking.'
+        : 'Tap the bar to start tracking.';
     }
     if (this.framesSinceDetection > NO_BAR_WARNING_FRAMES) {
-      return this.calibration.metersPerPixel == null
-        ? 'Tap 📏 to calibrate before lifting.'
-        : 'Bar not visible — re-calibrate if the angle changed.';
+      return 'Lost the bar — tap it again to resume.';
     }
     if (this.calibration.metersPerPixel == null) {
       return 'Tap 📏 to calibrate.';

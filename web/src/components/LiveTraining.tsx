@@ -6,6 +6,7 @@ import CalibrationSheet from './CalibrationSheet';
 import DebugSheet from './DebugSheet';
 import SetSummarySheet from './SetSummarySheet';
 import PlaybackControls from './PlaybackControls';
+import TapToInitOverlay from './TapToInitOverlay';
 import {
   useTrainingEngine,
   useTrainingState,
@@ -110,6 +111,23 @@ export default function LiveTraining() {
     <div className="live">
       <CameraView ref={videoRef} />
       <BoundingBoxOverlay detection={state.detection} isTracking={state.isTracking} />
+
+      <TapToInitOverlay
+        visible={
+          state.visionMode === 'template' &&
+          state.needsTrackingPoint &&
+          state.isCameraReady &&
+          (state.mediaMode === 'live' || state.isPaused)
+        }
+        hint={
+          state.mediaMode === 'file' && !state.isPaused
+            ? 'Pause first, then tap the bar.'
+            : 'Tap the centre of the bar to start tracking.'
+        }
+        videoWidth={state.cameraWidth}
+        videoHeight={state.cameraHeight}
+        onTap={(x, y) => engine.setTrackingPoint(x, y)}
+      />
 
       <input
         ref={fileInputRef}

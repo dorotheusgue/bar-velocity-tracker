@@ -160,6 +160,35 @@ export default function DebugSheet(props: Props) {
       </section>
 
       <section>
+        <h3>Detection</h3>
+        <div className="row">
+          <span>Mode</span>
+          <span className="row__value">{state.visionMode}</span>
+        </div>
+        <div className="presets">
+          <button
+            type="button"
+            onClick={() => void engine.setVisionMode('template')}
+            disabled={state.visionMode === 'template'}
+          >
+            Tap to track
+          </button>
+          <button
+            type="button"
+            onClick={() => void engine.setVisionMode('coco-ssd')}
+            disabled={state.visionMode === 'coco-ssd'}
+          >
+            Auto (downloads ~6 MB)
+          </button>
+        </div>
+        {state.visionMode === 'coco-ssd' && !state.isModelReady && (
+          <p className="row" style={{ color: 'var(--text-dim)' }}>
+            Loading TensorFlow.js…
+          </p>
+        )}
+      </section>
+
+      <section>
         <h3>Live</h3>
         <Row label="Velocity" value={`${state.velocity.toFixed(3)} m/s`} />
         <Row label="Phase" value={state.phase} />

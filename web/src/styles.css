@@ -305,6 +305,70 @@ select {
   box-shadow: none;
 }
 
+/* Tap-to-init overlay --------------------------------------------------- */
+.tap-init {
+  position: absolute;
+  inset: 0;
+  z-index: 10;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.35);
+  cursor: crosshair;
+  touch-action: none;
+}
+
+.tap-init__crosshair {
+  position: relative;
+  width: 120px;
+  height: 120px;
+  animation: pulse 1.8s ease-in-out infinite;
+}
+
+.tap-init__h,
+.tap-init__v {
+  position: absolute;
+  background: rgba(255, 255, 255, 0.85);
+}
+
+.tap-init__h {
+  left: 0;
+  right: 0;
+  top: 50%;
+  height: 1px;
+  transform: translateY(-50%);
+}
+
+.tap-init__v {
+  top: 0;
+  bottom: 0;
+  left: 50%;
+  width: 1px;
+  transform: translateX(-50%);
+}
+
+.tap-init__ring {
+  position: absolute;
+  inset: 30px;
+  border: 2px solid var(--accent);
+  border-radius: 50%;
+}
+
+@keyframes pulse {
+  0%, 100% { transform: scale(1); opacity: 0.9; }
+  50%      { transform: scale(0.9); opacity: 0.5; }
+}
+
+.tap-init__hint {
+  margin-top: 18px;
+  background: rgba(0, 0, 0, 0.6);
+  padding: 8px 14px;
+  border-radius: 999px;
+  font-size: 13px;
+  color: #fff;
+}
+
 /* Rep card --------------------------------------------------------------- */
 .rep-card {
   position: absolute;

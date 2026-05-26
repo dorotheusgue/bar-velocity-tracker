@@ -1,10 +1,16 @@
 # Bar Velocity Tracker — Web
 
-React + Vite + TypeScript port of the iOS app. Same architecture (camera →
-detector → Kalman tracker → kinematics → rep detector → metrics), runs in any
-modern browser, installs as a PWA. Detection uses TensorFlow.js with the
-in-browser COCO-SSD model by default; swap in a trained YOLOv8 → TFJS model
-when you have one.
+React + Vite + TypeScript. Same pipeline as the iOS app (camera → tracker →
+Kalman → kinematics → reps → metrics), runs in any modern browser.
+
+**Default tracker is tap-to-init template matching** (RepSpeed-style): you tap
+the bar once, classical normalized cross-correlation tracks it from there. No
+model download, ~60 KB initial bundle, frame-perfect accuracy because the ROI
+is exactly where you pointed.
+
+An optional COCO-SSD auto-detector (the original heavy path) is still available
+behind a toggle in the debug sheet — it lazy-loads ~6 MB of TensorFlow.js only
+if you ask for it.
 
 ## Requirements
 
@@ -74,7 +80,26 @@ Per-frame timestamps come from `video.currentTime`, so velocities stay in real m
 
 The History tab is the same for both — past sessions grouped by day; tap a set to open the chart.
 
-## Detection — the COCO-SSD limitation
+## Detection — two modes
+
+**Default: tap-to-track (template matching).** When you start the camera or
+load a video, the app shows a crosshair overlay. Tap the centre of the bar.
+We grab a 32×32 grayscale patch around that point and, on every subsequent
+frame, slide it through a small search window using normalized cross-
+correlation. Lightweight, accurate, runs at full frame rate in plain JS.
+
+* If the tracker loses the bar (large lighting change, bar leaves frame), the
+  overlay reappears — tap again to resume.
+* For uploaded videos: pause first, tap, then play.
+* The same approach is what RepSpeed/iLOAD use; MyJump 2 uses a related "tap
+  two frames" pattern for jump height.
+
+**Optional: COCO-SSD auto-detect.** Toggle this from the debug sheet (⚙️) if
+you don't want to tap. TF.js loads on demand (~6 MB). Generic 80-class
+detector, less accurate than tap-to-track for barbells specifically, but
+hands-off.
+
+## COCO-SSD limitation (if you enable it)
 
 COCO-SSD is a generic 80-class object detector. It does not know what a barbell
 is. The web detector compensates by:
@@ -144,13 +169,14 @@ The rest of the pipeline (tracker, kinematics, rep detector) is detector-agnosti
 ## Architecture
 
 ```
-camera.ts              getUserMedia wrapper — emits frames via the <video>
+camera.ts / videoFile.ts   live camera or uploaded clip
    │
    ▼
-detector.ts            CocoSsdBarDetector (TF.js) → BarDetection
+vision.ts                  TemplateTrackerPipeline (default, ~60 KB)
+                           or CocoSsdPipeline (optional, lazy ~6 MB)
    │
    ▼
-barTracker.ts          KalmanFilter1D smooths yPixel; rolling history
+barTracker.ts              KalmanFilter1D smooths yPixel; rolling history
    │
    ▼
 kinematics.ts          px → m, windowed least-squares slope, ZUPT

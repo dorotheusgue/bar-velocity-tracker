@@ -1,13 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
-import {
-  LineChart,
-  Line,
-  ResponsiveContainer,
-  XAxis,
-  YAxis,
-  BarChart,
-  Bar,
-} from 'recharts';
+import MiniBarChart from './MiniBarChart';
+import MiniLineChart from './MiniLineChart';
 import { loadSessions } from '../lib/storage';
 import type { SetSummary, StoredSession } from '../types';
 
@@ -57,13 +50,15 @@ export default function History() {
             <Stat label="V-Loss" value={`${openSet.velocityLossPercent.toFixed(1)}%`} />
           </div>
           <div className="summary-chart">
-            <ResponsiveContainer width="100%" height={200}>
-              <BarChart data={openSet.reps.map((r) => ({ index: r.index, mcv: r.meanConcentricVelocity }))}>
-                <XAxis dataKey="index" stroke="#888" />
-                <YAxis stroke="#888" />
-                <Bar dataKey="mcv" fill="#3372ff" radius={[4, 4, 0, 0]} />
-              </BarChart>
-            </ResponsiveContainer>
+            <MiniBarChart
+              data={openSet.reps.map((r) => ({
+                id: r.id,
+                index: r.index,
+                value: r.meanConcentricVelocity,
+                highlight: r.id === openSet.bestRepId,
+              }))}
+              reference={openSet.targetVelocity}
+            />
           </div>
         </div>
       )}
@@ -93,7 +88,7 @@ function SessionCard({
     [session.sets]
   );
 
-  const trend = sortedSets.map((s, i) => ({ index: i + 1, mcv: s.averageMCV }));
+  const trend = sortedSets.map((s) => s.averageMCV);
 
   return (
     <section className="session-card">
@@ -103,17 +98,7 @@ function SessionCard({
       </header>
       {trend.length > 1 && (
         <div className="session-card__trend">
-          <ResponsiveContainer width="100%" height={48}>
-            <LineChart data={trend}>
-              <Line
-                dataKey="mcv"
-                stroke="#32c759"
-                strokeWidth={2}
-                dot={{ r: 2 }}
-                isAnimationActive={false}
-              />
-            </LineChart>
-          </ResponsiveContainer>
+          <MiniLineChart values={trend} />
         </div>
       )}
       <ul className="session-card__sets">
