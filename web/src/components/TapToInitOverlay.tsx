@@ -1,4 +1,5 @@
 import { useRef } from 'react';
+import { domToVideoCoords } from '../lib/coords';
 
 interface Props {
   visible: boolean;
@@ -10,8 +11,8 @@ interface Props {
 
 /**
  * Full-screen tap layer shown when the template tracker needs a seed point.
- * Translates the DOM tap coordinates back into the *video pixel* space the
- * tracker expects, accounting for `object-fit: cover` on the underlying video.
+ * Translates the DOM tap back into the *video pixel* space the tracker
+ * expects, accounting for `object-fit: cover` on the underlying video.
  */
 export default function TapToInitOverlay({
   visible,
@@ -48,28 +49,4 @@ export default function TapToInitOverlay({
       <p className="tap-init__hint">{hint}</p>
     </div>
   );
-}
-
-/**
- * Inverse of `object-fit: cover`: figure out where in the underlying video a
- * DOM tap landed. The video is scaled by `max(cw/vw, ch/vh)` so the smaller
- * dimension overflows, then centered.
- */
-function domToVideoCoords(
-  cx: number,
-  cy: number,
-  cw: number,
-  ch: number,
-  vw: number,
-  vh: number
-): { x: number; y: number } {
-  const scale = Math.max(cw / vw, ch / vh);
-  const dw = vw * scale;
-  const dh = vh * scale;
-  const ox = (cw - dw) / 2;
-  const oy = (ch - dh) / 2;
-  return {
-    x: Math.max(0, Math.min(vw - 1, (cx - ox) / scale)),
-    y: Math.max(0, Math.min(vh - 1, (cy - oy) / scale)),
-  };
 }

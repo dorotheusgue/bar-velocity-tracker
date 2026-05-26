@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import CameraView from './CameraView';
 import BoundingBoxOverlay from './BoundingBoxOverlay';
 import RepCard from './RepCard';
-import CalibrationSheet from './CalibrationSheet';
+import CalibrationOverlay from './CalibrationOverlay';
 import DebugSheet from './DebugSheet';
 import SetSummarySheet from './SetSummarySheet';
 import PlaybackControls from './PlaybackControls';
@@ -14,6 +14,7 @@ import {
   useLastSummary,
 } from '../state/useTraining';
 import { appendSet } from '../lib/storage';
+import type { Point2D } from '../lib/coords';
 import type { SetSummary } from '../types';
 
 const STORAGE_EXERCISE = 'bvt.exerciseName';
@@ -98,6 +99,20 @@ export default function LiveTraining() {
     void engine.start(videoRef.current, 'environment');
   }
 
+  function handleOpenCalibration() {
+    // Pause uploaded clips so the bar stays still while the user taps collars.
+    if (state.mediaMode === 'file' && !state.isPaused) {
+      engine.togglePlay();
+    }
+    setShowCalibration(true);
+  }
+
+  function handleCalibrationSave(aVideo: Point2D, bVideo: Point2D, knownMeters: number) {
+    engine.calibration.setKnownDistance(knownMeters);
+    engine.calibration.calibrateFromPoints(aVideo, bVideo);
+    setShowCalibration(false);
+  }
+
   const velocityClass =
     state.velocity >= targetVelocity
       ? 'velocity--good'
@@ -114,6 +129,7 @@ export default function LiveTraining() {
 
       <TapToInitOverlay
         visible={
+          !showCalibration &&
           state.visionMode === 'template' &&
           state.needsTrackingPoint &&
           state.isCameraReady &&
@@ -140,7 +156,7 @@ export default function LiveTraining() {
       <div className="live__hud">
         <header className="live__top">
           <div className="live__top-left">
-            <IconButton aria-label="Calibrate" onClick={() => setShowCalibration(true)}>
+            <IconButton aria-label="Calibrate" onClick={handleOpenCalibration}>
               📏
             </IconButton>
             {isFile ? (
@@ -214,10 +230,14 @@ export default function LiveTraining() {
 
       <RepCard rep={lastRep} targetVelocity={targetVelocity} />
 
-      <CalibrationSheet
-        open={showCalibration}
-        onClose={() => setShowCalibration(false)}
-        calibration={engine.calibration}
+      <CalibrationOverlay
+        visible={showCalibration}
+        videoWidth={state.cameraWidth}
+        videoHeight={state.cameraHeight}
+        initialDistance={engine.calibration.knownDistanceMeters}
+        currentScale={engine.calibration.metersPerPixel}
+        onSave={handleCalibrationSave}
+        onCancel={() => setShowCalibration(false)}
       />
       <DebugSheet
         open={showDebug}
