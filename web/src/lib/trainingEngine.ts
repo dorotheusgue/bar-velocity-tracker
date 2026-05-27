@@ -1,4 +1,3 @@
-import { startCamera, type CameraHandle } from './camera';
 import { loadVideoFile, type VideoFileHandle } from './videoFile';
 import {
   TemplateTrackerPipeline,
@@ -13,14 +12,12 @@ import { RepDetector } from './repDetector';
 import { MetricsEngine, type MetricsSnapshot } from './metrics';
 import type { BarDetection, BarPosition, Rep, SetSummary } from '../types';
 
-export type MediaMode = 'live' | 'file';
 export type VisionMode = 'template' | 'coco-ssd';
 
 export interface TrainingState {
-  isCameraReady: boolean;
+  hasVideo: boolean;
   isModelReady: boolean;
   isTracking: boolean;
-  isRunning: boolean;
   needsTrackingPoint: boolean;
   velocity: number;
   repCount: number;
@@ -29,13 +26,11 @@ export interface TrainingState {
   detection: BarDetection | null;
   position: BarPosition | null;
   metrics: MetricsSnapshot;
-  cameraNotice: string | null;
+  notice: string | null;
   lastError: string | null;
-  facingMode: 'user' | 'environment';
-  cameraWidth: number;
-  cameraHeight: number;
+  videoWidth: number;
+  videoHeight: number;
   fps: number;
-  mediaMode: MediaMode;
   visionMode: VisionMode;
   filename: string | null;
   isPaused: boolean;
@@ -47,11 +42,11 @@ const NO_BAR_WARNING_FRAMES = 25;
 const SEEK_JUMP_SECONDS = 0.5;
 
 /**
- * Owns the camera/file pipeline and the per-frame loop:
- *   frame → vision pipeline → tracker → kinematics → rep detector → metrics
- *
- * Default vision = tap-to-init template tracker (no model download). Optional
- * COCO-SSD pipeline can be loaded on demand for fully-automatic detection.
+ * Upload-only velocity tracking engine. The user loads a video, marks a plate
+ * (calibrate + seed tracker in one), and presses play. Per-frame processing
+ * is driven by `requestVideoFrameCallback` so it only runs while the video
+ * advances — paused = zero CPU. UI sync happens via `play`/`pause`/`timeupdate`
+ * /`seeked` listeners on the video, not an always-on RAF loop.
  */
 export class TrainingEngine {
   readonly calibration = new CalibrationManager();
@@ -60,15 +55,13 @@ export class TrainingEngine {
   readonly repDetector: RepDetector;
   readonly metrics = new MetricsEngine();
 
-  /** Offscreen 2D context that the vision pipeline reads pixels from. */
   private readonly ctx: CanvasRenderingContext2D;
   private vision: VisionPipeline;
 
   private video: HTMLVideoElement | null = null;
-  private camera: CameraHandle | null = null;
   private file: VideoFileHandle | null = null;
-  private loopId: number | null = null;
   private rvfcHandle: number | null = null;
+  private videoListeners: Array<{ event: string; handler: EventListener }> = [];
   private detecting = false;
   private framesSinceDetection = 0;
   private framesProcessed = 0;
@@ -84,10 +77,9 @@ export class TrainingEngine {
   targetVelocity = 0.6;
 
   private state: TrainingState = {
-    isCameraReady: false,
-    isModelReady: true, // template tracker has no model to load
+    hasVideo: false,
+    isModelReady: true,
     isTracking: false,
-    isRunning: false,
     needsTrackingPoint: true,
     velocity: 0,
     repCount: 0,
@@ -96,13 +88,11 @@ export class TrainingEngine {
     detection: null,
     position: null,
     metrics: this.metrics.snapshot(),
-    cameraNotice: null,
+    notice: null,
     lastError: null,
-    facingMode: 'environment',
-    cameraWidth: 0,
-    cameraHeight: 0,
+    videoWidth: 0,
+    videoHeight: 0,
     fps: 0,
-    mediaMode: 'live',
     visionMode: 'template',
     filename: null,
     isPaused: true,
@@ -171,11 +161,7 @@ export class TrainingEngine {
     this.vision.dispose?.();
     if (mode === 'coco-ssd') {
       this.vision = new CocoSsdPipeline();
-      this.update({
-        visionMode: 'coco-ssd',
-        needsTrackingPoint: false,
-        isModelReady: false,
-      });
+      this.update({ visionMode: 'coco-ssd', needsTrackingPoint: false, isModelReady: false });
       try {
         await this.vision.ready;
         this.update({ isModelReady: true });
@@ -184,37 +170,22 @@ export class TrainingEngine {
       }
     } else {
       this.vision = new TemplateTrackerPipeline();
-      this.update({
-        visionMode: 'template',
-        needsTrackingPoint: true,
-        isModelReady: true,
-      });
+      this.update({ visionMode: 'template', needsTrackingPoint: true, isModelReady: true });
     }
     this.resetAnalysis();
   }
 
-  /**
-   * Seed the template tracker with a tap point. Coordinates are in *video*
-   * pixel space (post-resolution, not DOM). Called by the UI after mapping
-   * the DOM tap location into the underlying video frame.
-   */
   setTrackingPoint(videoX: number, videoY: number): boolean {
     if (!this.video || !this.vision.setTrackingPoint) return false;
     drawVideoToContext(this.video, this.ctx);
     const ok = this.vision.setTrackingPoint({ x: videoX, y: videoY }, this.ctx);
     if (ok) {
-      this.update({ needsTrackingPoint: false, cameraNotice: null });
+      this.update({ needsTrackingPoint: false, notice: null });
       this.framesSinceDetection = 0;
     }
     return ok;
   }
 
-  /**
-   * RepSpeed-style single action: the user marks a plate (centre + edge) and
-   * sets its known diameter. That call simultaneously calibrates the m/px
-   * scale (from the plate's known diameter) and seeds the tracker template
-   * at the plate's centre. One tap-and-drag, no separate calibration step.
-   */
   selectPlate(
     centerVideo: { x: number; y: number },
     edgeVideo: { x: number; y: number },
@@ -224,48 +195,10 @@ export class TrainingEngine {
     return this.setTrackingPoint(centerVideo.x, centerVideo.y);
   }
 
-  // MARK: - Source switching
-
-  async start(video: HTMLVideoElement, facingMode: 'user' | 'environment' = 'environment') {
-    this.cancelRvfc();
-    this.disposeSources();
-    this.video = video;
-    try {
-      this.camera = await startCamera(video, { facingMode });
-    } catch (e) {
-      this.update({ lastError: `Camera permission denied: ${e}` });
-      return;
-    }
-    this.tracker.frameWidth = this.camera.width;
-    this.tracker.frameHeight = this.camera.height;
-    this.calibration.load({
-      facing: this.camera.facingMode,
-      resolution: `${this.camera.width}x${this.camera.height}`,
-    });
-    this.resetAnalysis();
-
-    this.update({
-      isCameraReady: true,
-      isRunning: true,
-      mediaMode: 'live',
-      filename: null,
-      facingMode: this.camera.facingMode,
-      cameraWidth: this.camera.width,
-      cameraHeight: this.camera.height,
-      isPaused: false,
-      currentTime: 0,
-      duration: 0,
-      lastError: null,
-      needsTrackingPoint: this.state.visionMode === 'template',
-      cameraNotice: this.computeNotice(),
-    });
-
-    this.runLoop();
-  }
+  // MARK: - File loading
 
   async loadFile(video: HTMLVideoElement, file: File) {
-    this.cancelRvfc();
-    this.disposeSources();
+    this.disposeSource();
     this.video = video;
     try {
       this.file = await loadVideoFile(video, file);
@@ -281,54 +214,50 @@ export class TrainingEngine {
       resolution: `${this.file.width}x${this.file.height}-file`,
     });
     this.resetAnalysis();
+    this.attachVideoListeners(video);
 
     this.update({
-      isCameraReady: true,
-      isRunning: true,
-      mediaMode: 'file',
+      hasVideo: true,
       filename: this.file.filename,
-      facingMode: 'environment',
-      cameraWidth: this.file.width,
-      cameraHeight: this.file.height,
+      videoWidth: this.file.width,
+      videoHeight: this.file.height,
       isPaused: true,
       currentTime: 0,
       duration: this.file.duration,
       lastError: null,
       needsTrackingPoint: this.state.visionMode === 'template',
-      cameraNotice: this.computeNotice(),
+      notice: this.computeNotice(),
     });
 
-    this.runLoop();
+    this.fpsWindowStart = performance.now();
+    this.framesProcessed = 0;
+    this.lastProcessedTime = -1;
+    this.scheduleRvfc();
   }
 
-  stop() {
-    if (this.loopId != null) {
-      cancelAnimationFrame(this.loopId);
-      this.loopId = null;
-    }
-    this.cancelRvfc();
-    this.disposeSources();
+  unloadFile() {
+    this.disposeSource();
+    this.resetAnalysis();
     this.update({
-      isRunning: false,
-      isCameraReady: false,
-      isPaused: true,
+      hasVideo: false,
       filename: null,
+      videoWidth: 0,
+      videoHeight: 0,
+      isPaused: true,
       currentTime: 0,
       duration: 0,
+      detection: null,
+      position: null,
+      velocity: 0,
+      notice: null,
     });
   }
 
-  async toggleCamera() {
-    if (!this.video) return;
-    const nextFacing = this.state.facingMode === 'environment' ? 'user' : 'environment';
-    await this.start(this.video, nextFacing);
-  }
-
-  // MARK: - Playback (file mode)
+  // MARK: - Playback
 
   togglePlay() {
     const v = this.video;
-    if (!v || this.state.mediaMode !== 'file') return;
+    if (!v) return;
     if (v.paused || v.ended) {
       if (v.ended) v.currentTime = 0;
       void v.play().catch((e) => this.update({ lastError: `Play failed: ${e}` }));
@@ -339,13 +268,13 @@ export class TrainingEngine {
 
   seek(time: number) {
     const v = this.video;
-    if (!v || this.state.mediaMode !== 'file') return;
+    if (!v) return;
     v.currentTime = Math.max(0, Math.min(time, this.state.duration || time));
   }
 
   restart() {
     const v = this.video;
-    if (!v || this.state.mediaMode !== 'file') return;
+    if (!v) return;
     v.currentTime = 0;
     this.resetAnalysis();
   }
@@ -359,11 +288,7 @@ export class TrainingEngine {
       targetVelocity: this.targetVelocity,
     });
     if (summary) {
-      // Pause file playback so the video doesn't keep advancing while the
-      // tracker is idle waiting for a fresh tap.
-      if (this.state.mediaMode === 'file' && this.video && !this.video.paused) {
-        this.video.pause();
-      }
+      if (this.video && !this.video.paused) this.video.pause();
       this.resetAnalysis();
       this.update({
         setRepCount: 0,
@@ -396,11 +321,6 @@ export class TrainingEngine {
     }
   }
 
-  /**
-   * Drop the current template and ask the UI to prompt for a new tap point.
-   * Called from the 🎯 button so users can recover from drift without waiting
-   * for the lost-track timeout.
-   */
   retapToTrack() {
     if (this.vision.kind !== 'template') return;
     this.vision.reset();
@@ -414,31 +334,70 @@ export class TrainingEngine {
       detection: null,
       position: null,
       velocity: 0,
-      cameraNotice: 'Tap a plate or the bar to start tracking.',
+      notice: 'Tap a plate to start tracking.',
     });
   }
 
-  // MARK: - Frame loop
+  // MARK: - Video event listeners (replaces RAF UI poller)
 
-  private runLoop() {
-    this.fpsWindowStart = performance.now();
-    this.framesProcessed = 0;
-    this.lastProcessedTime = -1;
+  private attachVideoListeners(video: HTMLVideoElement) {
+    this.detachVideoListeners();
+    const syncPlayback = () => {
+      this.update({
+        isPaused: video.paused,
+        currentTime: video.currentTime,
+        duration: Number.isFinite(video.duration) ? video.duration : this.state.duration,
+      });
+    };
+    const onPlay = () => syncPlayback();
+    const onPause = () => syncPlayback();
+    const onTimeUpdate = () => syncPlayback();
+    const onSeeked = () => {
+      this.resetKinematicsOnly();
+      syncPlayback();
+    };
+    const onDurationChange = () => syncPlayback();
+    const onEnded = () => syncPlayback();
 
-    // For files in browsers that support it, use requestVideoFrameCallback so
-    // each real video frame gets exactly one processing pass with its real
-    // frame timestamp. This is the difference between "deterministic across
-    // runs" and "RAF happened to land at slightly different times this time".
-    const supportsRvfc =
-      this.state.mediaMode === 'file' &&
-      this.video != null &&
-      'requestVideoFrameCallback' in this.video;
-    if (supportsRvfc) {
-      this.scheduleRvfc();
+    const pairs: Array<[string, EventListener]> = [
+      ['play', onPlay],
+      ['pause', onPause],
+      ['timeupdate', onTimeUpdate],
+      ['seeked', onSeeked],
+      ['durationchange', onDurationChange],
+      ['ended', onEnded],
+    ];
+    for (const [event, handler] of pairs) {
+      video.addEventListener(event, handler);
+      this.videoListeners.push({ event, handler });
     }
-    // RAF still runs for live mode, and as the UI-state poller for files
-    // (paused/currentTime/duration updates that rVFC won't fire while paused).
-    if (this.loopId == null) this.loop();
+  }
+
+  private detachVideoListeners() {
+    if (!this.video || this.videoListeners.length === 0) return;
+    for (const { event, handler } of this.videoListeners) {
+      this.video.removeEventListener(event, handler);
+    }
+    this.videoListeners = [];
+  }
+
+  // MARK: - rVFC frame processing
+
+  private scheduleRvfc() {
+    const video = this.video as unknown as {
+      requestVideoFrameCallback?: (
+        cb: (now: number, metadata: { mediaTime?: number }) => void
+      ) => number;
+    } | null;
+    if (!video?.requestVideoFrameCallback) return;
+    this.rvfcHandle = video.requestVideoFrameCallback((_now, metadata) => {
+      this.rvfcHandle = null;
+      if (!this.video) return;
+      // Re-arm immediately so frames presented during processing aren't lost.
+      this.scheduleRvfc();
+      const t = metadata.mediaTime ?? this.video.currentTime;
+      void this.onVideoFrame(t);
+    });
   }
 
   private cancelRvfc() {
@@ -451,25 +410,8 @@ export class TrainingEngine {
     }
   }
 
-  private scheduleRvfc() {
-    const video = this.video as unknown as {
-      requestVideoFrameCallback?: (
-        cb: (now: number, metadata: { mediaTime?: number }) => void
-      ) => number;
-    };
-    if (!video.requestVideoFrameCallback) return;
-    this.rvfcHandle = video.requestVideoFrameCallback((_now, metadata) => {
-      this.rvfcHandle = null;
-      if (!this.video || !this.state.isRunning || this.state.mediaMode !== 'file') return;
-      // Re-arm immediately so frames presented during processing aren't lost.
-      this.scheduleRvfc();
-      const t = metadata.mediaTime ?? this.video.currentTime;
-      void this.onVideoFrame(t);
-    });
-  }
-
   private async onVideoFrame(t: number) {
-    if (this.detecting) return; // previous frame's processing still in flight
+    if (this.detecting) return;
     if (this.state.needsTrackingPoint) return;
     if (t === this.lastProcessedTime) return;
     if (
@@ -480,45 +422,6 @@ export class TrainingEngine {
     }
     await this.processFrame(t);
   }
-
-  private loop = () => {
-    this.loopId = requestAnimationFrame(this.loop);
-    if (!this.video || !this.state.isRunning) return;
-
-    const v = this.video;
-    const t = v.currentTime;
-    const fileMode = this.state.mediaMode === 'file';
-
-    if (fileMode) {
-      if (
-        v.paused !== this.state.isPaused ||
-        Math.abs(t - this.state.currentTime) > 0.03 ||
-        (v.duration && v.duration !== this.state.duration)
-      ) {
-        this.update({
-          isPaused: v.paused,
-          currentTime: t,
-          duration: Number.isFinite(v.duration) ? v.duration : this.state.duration,
-        });
-      }
-    }
-
-    // If we're driving file processing via rVFC, the RAF loop is just a UI
-    // poller — don't double-process frames.
-    if (fileMode && this.rvfcHandle != null) return;
-
-    if (fileMode &&
-        this.lastProcessedTime >= 0 &&
-        (t < this.lastProcessedTime || t - this.lastProcessedTime > SEEK_JUMP_SECONDS)
-    ) {
-      this.resetKinematicsOnly();
-    }
-
-    if (this.detecting) return;
-    if (t === this.lastProcessedTime) return;
-    if (this.state.needsTrackingPoint) return; // waiting for user tap
-    void this.processFrame(t);
-  };
 
   private async processFrame(t: number) {
     if (!this.video) return;
@@ -554,14 +457,12 @@ export class TrainingEngine {
         isTracking: this.tracker.isTracking,
         phase: this.repDetector.phase,
         repCount: this.repDetector.repCount,
-        cameraNotice: this.computeNotice(),
+        notice: this.computeNotice(),
         fps,
         needsTrackingPoint: lostTrack ? true : this.state.needsTrackingPoint,
       });
 
-      if (lostTrack) {
-        this.vision.reset();
-      }
+      if (lostTrack) this.vision.reset();
     } catch (e) {
       this.update({ lastError: String(e) });
     } finally {
@@ -588,9 +489,9 @@ export class TrainingEngine {
     this.framesSinceDetection = 0;
   }
 
-  private disposeSources() {
-    this.camera?.stop();
-    this.camera = null;
+  private disposeSource() {
+    this.cancelRvfc();
+    this.detachVideoListeners();
     this.file?.dispose();
     this.file = null;
   }

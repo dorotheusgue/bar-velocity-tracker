@@ -80,6 +80,57 @@ select {
   background: #000;
 }
 
+/* Upload empty state ----------------------------------------------------- */
+.upload-cta {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  background: linear-gradient(180deg, #0b0d10 0%, #14181d 100%);
+}
+
+.upload-cta__inner {
+  max-width: 320px;
+  text-align: center;
+  color: var(--text);
+}
+
+.upload-cta__icon {
+  font-size: 48px;
+  margin-bottom: 12px;
+}
+
+.upload-cta__inner h1 {
+  font-size: 22px;
+  margin: 0 0 6px;
+}
+
+.upload-cta__inner p {
+  font-size: 14px;
+  color: var(--text-dim);
+  margin: 0 0 24px;
+  line-height: 1.4;
+}
+
+.upload-cta__button {
+  background: var(--accent);
+  color: #fff;
+  border: 0;
+  padding: 14px 28px;
+  border-radius: 999px;
+  font-size: 16px;
+  font-weight: 700;
+  box-shadow: 0 10px 24px rgba(51, 114, 255, 0.3);
+}
+
+.upload-cta__error {
+  margin-top: 16px;
+  color: var(--bad);
+  font-size: 13px;
+}
+
 .camera-view {
   position: absolute;
   inset: 0;

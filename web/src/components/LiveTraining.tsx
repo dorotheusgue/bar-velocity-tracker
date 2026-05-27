@@ -53,16 +53,6 @@ export default function LiveTraining() {
     localStorage.setItem(STORAGE_TARGET, String(targetVelocity));
   }, [engine, exerciseName, loadKg, targetVelocity]);
 
-  // Start the camera once the <video> element is mounted and the model is ready.
-  useEffect(() => {
-    const video = videoRef.current;
-    if (!video || !state.isModelReady) return;
-    if (state.isRunning) return;
-    void engine.start(video, 'environment');
-    return () => engine.stop();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [engine, state.isModelReady]);
-
   useEffect(() => {
     if (lastSummary) {
       setPendingSave(lastSummary);
@@ -70,17 +60,19 @@ export default function LiveTraining() {
     }
   }, [lastSummary]);
 
-  // Auto-open the plate selector whenever we need a fresh target.
+  // Auto-open the plate picker whenever the engine wants a fresh target and
+  // we actually have a loaded video. Auto-pauses the clip so the bar is still.
   useEffect(() => {
-    if (state.needsTrackingPoint && state.visionMode === 'template' && state.isCameraReady) {
-      // For files, pause first so the bar is still while the user marks it.
-      if (state.mediaMode === 'file' && !state.isPaused) {
-        engine.togglePlay();
-      }
+    if (
+      state.hasVideo &&
+      state.needsTrackingPoint &&
+      state.visionMode === 'template'
+    ) {
+      if (!state.isPaused) engine.togglePlay();
       setShowPlatePicker(true);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [state.needsTrackingPoint, state.isCameraReady, state.visionMode]);
+  }, [state.hasVideo, state.needsTrackingPoint, state.visionMode]);
 
   function handleEndSet() {
     engine.endSet();
@@ -104,13 +96,8 @@ export default function LiveTraining() {
     void engine.loadFile(videoRef.current, file);
   }
 
-  function handleBackToLive() {
-    if (!videoRef.current) return;
-    void engine.start(videoRef.current, 'environment');
-  }
-
   function handleOpenPlatePicker() {
-    if (state.mediaMode === 'file' && !state.isPaused) engine.togglePlay();
+    if (!state.isPaused) engine.togglePlay();
     setShowPlatePicker(true);
   }
 
@@ -126,7 +113,39 @@ export default function LiveTraining() {
         ? 'velocity--warn'
         : 'velocity--bad';
 
-  const isFile = state.mediaMode === 'file';
+  // Empty state: no video loaded yet.
+  if (!state.hasVideo) {
+    return (
+      <div className="live">
+        <CameraView ref={videoRef} />
+        <input
+          ref={fileInputRef}
+          type="file"
+          accept="video/*"
+          hidden
+          onChange={handleFilePick}
+        />
+        <div className="upload-cta">
+          <div className="upload-cta__inner">
+            <div className="upload-cta__icon" aria-hidden>📁</div>
+            <h1>Upload a lift video</h1>
+            <p>
+              Pick any MP4 / MOV clip. You'll mark a plate to calibrate and
+              start tracking — that's it.
+            </p>
+            <button
+              type="button"
+              className="upload-cta__button"
+              onClick={() => fileInputRef.current?.click()}
+            >
+              Choose video
+            </button>
+            {state.lastError && <p className="upload-cta__error">{state.lastError}</p>}
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="live">
@@ -149,23 +168,11 @@ export default function LiveTraining() {
       <div className="live__hud">
         <header className="live__top">
           <div className="live__top-left">
+            <IconButton aria-label="Upload another video" onClick={() => fileInputRef.current?.click()}>
+              📁
+            </IconButton>
             <IconButton aria-label="Pick plate" onClick={handleOpenPlatePicker}>
               📏
-            </IconButton>
-            {isFile ? (
-              <IconButton aria-label="Switch to live camera" onClick={handleBackToLive}>
-                📷
-              </IconButton>
-            ) : (
-              <IconButton aria-label="Flip camera" onClick={() => void engine.toggleCamera()}>
-                🔄
-              </IconButton>
-            )}
-            <IconButton
-              aria-label="Upload video"
-              onClick={() => fileInputRef.current?.click()}
-            >
-              📁
             </IconButton>
           </div>
           <div className="live__meta">
@@ -182,8 +189,7 @@ export default function LiveTraining() {
         </header>
 
         <div className="live__center">
-          {state.cameraNotice && <p className="live__notice">{state.cameraNotice}</p>}
-          {!state.isModelReady && <p className="live__notice">Loading detection model…</p>}
+          {state.notice && <p className="live__notice">{state.notice}</p>}
           {state.lastError && (
             <p className="live__notice live__notice--error">{state.lastError}</p>
           )}
@@ -205,24 +211,20 @@ export default function LiveTraining() {
                 conf {(state.detection.confidence * 100).toFixed(0)}%
               </span>
             )}
-            <span className="chip">
-              {isFile ? `${state.duration.toFixed(1)}s clip` : `${state.fps.toFixed(0)} fps`}
-            </span>
+            <span className="chip">{state.duration.toFixed(1)}s clip</span>
           </div>
         </div>
 
         <footer className="live__bottom">
-          {isFile && (
-            <PlaybackControls
-              filename={state.filename}
-              isPaused={state.isPaused}
-              currentTime={state.currentTime}
-              duration={state.duration}
-              onTogglePlay={() => engine.togglePlay()}
-              onRestart={() => engine.restart()}
-              onSeek={(t) => engine.seek(t)}
-            />
-          )}
+          <PlaybackControls
+            filename={state.filename}
+            isPaused={state.isPaused}
+            currentTime={state.currentTime}
+            duration={state.duration}
+            onTogglePlay={() => engine.togglePlay()}
+            onRestart={() => engine.restart()}
+            onSeek={(t) => engine.seek(t)}
+          />
           <button
             type="button"
             className="end-set"
@@ -238,8 +240,8 @@ export default function LiveTraining() {
 
       <PlateSelectorOverlay
         visible={showPlatePicker}
-        videoWidth={state.cameraWidth}
-        videoHeight={state.cameraHeight}
+        videoWidth={state.videoWidth}
+        videoHeight={state.videoHeight}
         onSave={handlePlateSave}
         onCancel={() => setShowPlatePicker(false)}
       />

@@ -229,10 +229,7 @@ export default function DebugSheet(props: Props) {
           value={state.detection ? `${(state.detection.confidence * 100).toFixed(0)}%` : '—'}
         />
         <Row label="FPS" value={state.fps.toFixed(1)} />
-        <Row
-          label="Camera"
-          value={`${state.cameraWidth}×${state.cameraHeight} ${state.facingMode}`}
-        />
+        <Row label="Video" value={`${state.videoWidth}×${state.videoHeight}`} />
       </section>
     </div>
   );
