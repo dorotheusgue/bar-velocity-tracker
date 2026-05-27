@@ -8,15 +8,22 @@ export interface KinematicsListener {
 
 /**
  * Pixel positions → meters → vertical velocity (m/s).
- * Uses a rolling least-squares slope (5–7 samples by default) instead of
- * frame-to-frame differentiation, and applies ZUPT to clamp drift when the
- * bar is essentially stationary.
+ *
+ * Slope is computed via least-squares regression over the samples in the most
+ * recent `windowSeconds` of *video time*, not a fixed sample count — that way
+ * a 30 fps clip and a 120 fps slow-mo both fit the slope over the same real
+ * duration (~200 ms by default) instead of one being four times noisier.
  *
  * Conforms to the same `BarMotionSource` contract as the iOS version: emits
  * a velocity and position stream that the rep detector subscribes to.
  */
 export class KinematicsEngine {
-  windowLength = 7;
+  /** Real-time span the least-squares window covers, in seconds. */
+  windowSeconds = 0.2;
+  /** Lower bound on samples used in the slope, to handle very low frame rates. */
+  minWindowSamples = 3;
+  /** Upper bound on samples used in the slope, to cap CPU at very high fps. */
+  maxWindowSamples = 32;
   zuptVelocityThreshold = 0.02; // m/s
   zuptDuration = 0.15; // seconds
 
@@ -35,8 +42,9 @@ export class KinematicsEngine {
     // positive meters = upward, matching the rest of the system.
     const yMeters = -this.calibration.convertPixelsToMeters(position.yPixel) - this.driftOffset;
     this.samples.push({ t: position.timestamp, yMeters });
-    if (this.samples.length > 240) {
-      this.samples.splice(0, this.samples.length - 240);
+    // ~4 seconds of history at 120 fps; cheap to keep, helps long ZUPT windows.
+    if (this.samples.length > 480) {
+      this.samples.splice(0, this.samples.length - 480);
     }
 
     const rawVelocity = this.computeWindowedVelocity();
@@ -65,26 +73,45 @@ export class KinematicsEngine {
     };
   }
 
-  /** Least-squares slope of y vs t over the most recent `windowLength` samples. */
+  /**
+   * Least-squares slope of y vs t over the samples within `windowSeconds`
+   * of video time, clamped between `minWindowSamples` and `maxWindowSamples`
+   * so we behave sanely at the extremes (10 fps webcam through 240 fps phone
+   * slow-mo).
+   */
   private computeWindowedVelocity(): number {
-    const start = Math.max(0, this.samples.length - this.windowLength);
-    const window = this.samples.slice(start);
-    if (window.length < 2) return 0;
+    const total = this.samples.length;
+    if (total < 2) return 0;
 
-    const n = window.length;
-    let sumT = 0,
-      sumY = 0,
-      sumTT = 0,
-      sumTY = 0;
-    for (const s of window) {
+    const latestT = this.samples[total - 1].t;
+    const cutoff = latestT - this.windowSeconds;
+    let startIdx = total - 1;
+    while (startIdx > 0 && this.samples[startIdx - 1].t >= cutoff) startIdx--;
+
+    let count = total - startIdx;
+    if (count < this.minWindowSamples) {
+      startIdx = Math.max(0, total - this.minWindowSamples);
+      count = total - startIdx;
+    } else if (count > this.maxWindowSamples) {
+      startIdx = total - this.maxWindowSamples;
+      count = this.maxWindowSamples;
+    }
+    if (count < 2) return 0;
+
+    let sumT = 0;
+    let sumY = 0;
+    let sumTT = 0;
+    let sumTY = 0;
+    for (let i = startIdx; i < total; i++) {
+      const s = this.samples[i];
       sumT += s.t;
       sumY += s.yMeters;
       sumTT += s.t * s.t;
       sumTY += s.t * s.yMeters;
     }
-    const denom = n * sumTT - sumT * sumT;
+    const denom = count * sumTT - sumT * sumT;
     if (denom === 0) return 0;
-    return (n * sumTY - sumT * sumY) / denom;
+    return (count * sumTY - sumT * sumY) / denom;
   }
 
   /**
