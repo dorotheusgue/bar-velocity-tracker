@@ -53,6 +53,9 @@ export class TemplateTracker {
   private templateMeanG = 0;
   private templateMeanB = 0;
   private lastPosition: TemplatePoint | null = null;
+  private velocityX = 0;
+  private velocityY = 0;
+  private missesInRow = 0;
 
   private readonly size: number;
   private readonly searchRadiusX: number;
@@ -62,6 +65,18 @@ export class TemplateTracker {
   /** Mutable so the debug sheet can tune it live. */
   colorWeight: number;
   private readonly updateRate: number;
+  /** Exponential smoothing for the inter-frame velocity estimate (0..1). */
+  private readonly velocitySmoothing = 0.6;
+  /**
+   * Cap on adaptive radius growth when consecutive frames miss. Kept modest
+   * (1.5×) because larger windows cost quadratically: 2× window ≈ 4× compute
+   * which can blow past the frame budget on phones and stall recovery worse
+   * than the original loss.
+   */
+  private readonly maxRadiusGrowth = 1.5;
+  /** Per-miss decay applied to the velocity estimate so the predicted window
+   *  snaps back toward the last known position quickly when the bar reverses. */
+  private readonly velocityMissDecay = 0.3;
 
   constructor(options: TemplateTrackerOptions = {}) {
     this.size = options.templateSize ?? 48;
@@ -89,6 +104,9 @@ export class TemplateTracker {
       return false;
     }
     this.lastPosition = { x: point.x, y: point.y };
+    this.velocityX = 0;
+    this.velocityY = 0;
+    this.missesInRow = 0;
 
     const sample = grabPatchData(
       ctx,
@@ -110,6 +128,9 @@ export class TemplateTracker {
   reset() {
     this.template = null;
     this.lastPosition = null;
+    this.velocityX = 0;
+    this.velocityY = 0;
+    this.missesInRow = 0;
   }
 
   track(ctx: CanvasRenderingContext2D): TemplateTrackResult | null {
@@ -118,13 +139,25 @@ export class TemplateTracker {
     const w = ctx.canvas.width;
     const h = ctx.canvas.height;
     const half = this.size / 2;
-    const rX = this.searchRadiusX;
-    const rY = this.searchRadiusY;
 
-    const winX = Math.max(0, Math.round(this.lastPosition.x - half - rX));
-    const winY = Math.max(0, Math.round(this.lastPosition.y - half - rY));
-    const winRight = Math.min(w, Math.round(this.lastPosition.x + half + rX));
-    const winBottom = Math.min(h, Math.round(this.lastPosition.y + half + rY));
+    // Motion prediction: shift the window centre by the smoothed inter-frame
+    // velocity so the tracker actively chases a moving bar instead of waiting
+    // for it to drift back into a fixed search box.
+    const predX = this.lastPosition.x + this.velocityX;
+    const predY = this.lastPosition.y + this.velocityY;
+
+    // Adaptive radius: when several frames missed in a row, expand the window
+    // (up to maxRadiusGrowth×) to recover lock; collapses back to default on
+    // the next successful match. Growth rate is 0.25 per miss so we only get
+    // the cost of a wider window when losses persist, not on a single hiccup.
+    const growth = Math.min(1 + this.missesInRow * 0.25, this.maxRadiusGrowth);
+    const rX = this.searchRadiusX * growth;
+    const rY = this.searchRadiusY * growth;
+
+    const winX = Math.max(0, Math.round(predX - half - rX));
+    const winY = Math.max(0, Math.round(predY - half - rY));
+    const winRight = Math.min(w, Math.round(predX + half + rX));
+    const winBottom = Math.min(h, Math.round(predY + half + rY));
     const winW = winRight - winX;
     const winH = winBottom - winY;
     if (winW < this.size || winH < this.size) return null;
@@ -175,7 +208,16 @@ export class TemplateTracker {
       }
     }
 
-    if (bestScore < this.minConfidence) return null;
+    if (bestScore < this.minConfidence) {
+      this.missesInRow += 1;
+      // Snap the predicted window back toward the last known position fast —
+      // if we missed, the velocity that we predicted with is probably wrong
+      // (bar reversed direction, or motion model lagging acceleration).
+      this.velocityX *= this.velocityMissDecay;
+      this.velocityY *= this.velocityMissDecay;
+      return null;
+    }
+    this.missesInRow = 0;
 
     // Subpixel refinement using the same composed score.
     let refinedOX = bestOX;
@@ -193,6 +235,14 @@ export class TemplateTracker {
 
     const cx = winX + refinedOX + half;
     const cy = winY + refinedOY + half;
+
+    // Update the smoothed inter-frame velocity used by the next prediction.
+    const dx = cx - this.lastPosition.x;
+    const dy = cy - this.lastPosition.y;
+    const a = this.velocitySmoothing;
+    this.velocityX = this.velocityX * (1 - a) + dx * a;
+    this.velocityY = this.velocityY * (1 - a) + dy * a;
+
     this.lastPosition = { x: cx, y: cy };
 
     if (this.updateRate > 0 && bestScore > 0.7) {

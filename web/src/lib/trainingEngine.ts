@@ -68,6 +68,7 @@ export class TrainingEngine {
   private camera: CameraHandle | null = null;
   private file: VideoFileHandle | null = null;
   private loopId: number | null = null;
+  private rvfcHandle: number | null = null;
   private detecting = false;
   private framesSinceDetection = 0;
   private framesProcessed = 0;
@@ -211,6 +212,7 @@ export class TrainingEngine {
   // MARK: - Source switching
 
   async start(video: HTMLVideoElement, facingMode: 'user' | 'environment' = 'environment') {
+    this.cancelRvfc();
     this.disposeSources();
     this.video = video;
     try {
@@ -247,6 +249,7 @@ export class TrainingEngine {
   }
 
   async loadFile(video: HTMLVideoElement, file: File) {
+    this.cancelRvfc();
     this.disposeSources();
     this.video = video;
     try {
@@ -288,6 +291,7 @@ export class TrainingEngine {
       cancelAnimationFrame(this.loopId);
       this.loopId = null;
     }
+    this.cancelRvfc();
     this.disposeSources();
     this.update({
       isRunning: false,
@@ -340,6 +344,11 @@ export class TrainingEngine {
       targetVelocity: this.targetVelocity,
     });
     if (summary) {
+      // Pause file playback so the video doesn't keep advancing while the
+      // tracker is idle waiting for a fresh tap.
+      if (this.state.mediaMode === 'file' && this.video && !this.video.paused) {
+        this.video.pause();
+      }
       this.resetAnalysis();
       this.update({
         setRepCount: 0,
@@ -400,7 +409,61 @@ export class TrainingEngine {
     this.fpsWindowStart = performance.now();
     this.framesProcessed = 0;
     this.lastProcessedTime = -1;
+
+    // For files in browsers that support it, use requestVideoFrameCallback so
+    // each real video frame gets exactly one processing pass with its real
+    // frame timestamp. This is the difference between "deterministic across
+    // runs" and "RAF happened to land at slightly different times this time".
+    const supportsRvfc =
+      this.state.mediaMode === 'file' &&
+      this.video != null &&
+      'requestVideoFrameCallback' in this.video;
+    if (supportsRvfc) {
+      this.scheduleRvfc();
+    }
+    // RAF still runs for live mode, and as the UI-state poller for files
+    // (paused/currentTime/duration updates that rVFC won't fire while paused).
     if (this.loopId == null) this.loop();
+  }
+
+  private cancelRvfc() {
+    if (this.rvfcHandle != null && this.video != null) {
+      const cancel = (this.video as unknown as {
+        cancelVideoFrameCallback?: (h: number) => void;
+      }).cancelVideoFrameCallback;
+      cancel?.call(this.video, this.rvfcHandle);
+      this.rvfcHandle = null;
+    }
+  }
+
+  private scheduleRvfc() {
+    const video = this.video as unknown as {
+      requestVideoFrameCallback?: (
+        cb: (now: number, metadata: { mediaTime?: number }) => void
+      ) => number;
+    };
+    if (!video.requestVideoFrameCallback) return;
+    this.rvfcHandle = video.requestVideoFrameCallback((_now, metadata) => {
+      this.rvfcHandle = null;
+      if (!this.video || !this.state.isRunning || this.state.mediaMode !== 'file') return;
+      // Re-arm immediately so frames presented during processing aren't lost.
+      this.scheduleRvfc();
+      const t = metadata.mediaTime ?? this.video.currentTime;
+      void this.onVideoFrame(t);
+    });
+  }
+
+  private async onVideoFrame(t: number) {
+    if (this.detecting) return; // previous frame's processing still in flight
+    if (this.state.needsTrackingPoint) return;
+    if (t === this.lastProcessedTime) return;
+    if (
+      this.lastProcessedTime >= 0 &&
+      (t < this.lastProcessedTime || t - this.lastProcessedTime > SEEK_JUMP_SECONDS)
+    ) {
+      this.resetKinematicsOnly();
+    }
+    await this.processFrame(t);
   }
 
   private loop = () => {
@@ -409,8 +472,9 @@ export class TrainingEngine {
 
     const v = this.video;
     const t = v.currentTime;
+    const fileMode = this.state.mediaMode === 'file';
 
-    if (this.state.mediaMode === 'file') {
+    if (fileMode) {
       if (
         v.paused !== this.state.isPaused ||
         Math.abs(t - this.state.currentTime) > 0.03 ||
@@ -422,13 +486,17 @@ export class TrainingEngine {
           duration: Number.isFinite(v.duration) ? v.duration : this.state.duration,
         });
       }
+    }
 
-      if (
+    // If we're driving file processing via rVFC, the RAF loop is just a UI
+    // poller — don't double-process frames.
+    if (fileMode && this.rvfcHandle != null) return;
+
+    if (fileMode &&
         this.lastProcessedTime >= 0 &&
         (t < this.lastProcessedTime || t - this.lastProcessedTime > SEEK_JUMP_SECONDS)
-      ) {
-        this.resetKinematicsOnly();
-      }
+    ) {
+      this.resetKinematicsOnly();
     }
 
     if (this.detecting) return;
