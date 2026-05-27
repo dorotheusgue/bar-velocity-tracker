@@ -52,6 +52,32 @@ export class CalibrationManager {
     this.calibrate(Math.sqrt(dx * dx + dy * dy));
   }
 
+  /**
+   * RepSpeed-style calibration: the user marks a plate's centre and one edge,
+   * the system already knows the plate's diameter (Olympic bumpers are 450 mm
+   * regardless of weight), and that pair gives us m/px directly. No separate
+   * "tap two collars" step required.
+   */
+  calibrateFromPlate(
+    centerPx: { x: number; y: number },
+    edgePx: { x: number; y: number },
+    diameterMeters: number
+  ) {
+    const dx = centerPx.x - edgePx.x;
+    const dy = centerPx.y - edgePx.y;
+    const radiusPx = Math.sqrt(dx * dx + dy * dy);
+    if (radiusPx <= 0 || diameterMeters <= 0) return;
+    const mpp = diameterMeters / (2 * radiusPx);
+    this.knownDistanceMeters = diameterMeters;
+    this.metersPerPixel = mpp;
+    localStorage.setItem(KNOWN_DISTANCE_KEY, JSON.stringify(diameterMeters));
+    if (this.currentKey) {
+      this.mppByKey[serialize(this.currentKey)] = mpp;
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(this.mppByKey));
+    }
+    this.notify();
+  }
+
   clear() {
     if (!this.currentKey) return;
     delete this.mppByKey[serialize(this.currentKey)];

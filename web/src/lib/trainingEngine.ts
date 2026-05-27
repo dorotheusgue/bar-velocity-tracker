@@ -209,6 +209,21 @@ export class TrainingEngine {
     return ok;
   }
 
+  /**
+   * RepSpeed-style single action: the user marks a plate (centre + edge) and
+   * sets its known diameter. That call simultaneously calibrates the m/px
+   * scale (from the plate's known diameter) and seeds the tracker template
+   * at the plate's centre. One tap-and-drag, no separate calibration step.
+   */
+  selectPlate(
+    centerVideo: { x: number; y: number },
+    edgeVideo: { x: number; y: number },
+    diameterMeters: number
+  ): boolean {
+    this.calibration.calibrateFromPlate(centerVideo, edgeVideo, diameterMeters);
+    return this.setTrackingPoint(centerVideo.x, centerVideo.y);
+  }
+
   // MARK: - Source switching
 
   async start(video: HTMLVideoElement, facingMode: 'user' | 'environment' = 'environment') {
@@ -582,15 +597,13 @@ export class TrainingEngine {
 
   private computeNotice(): string | null {
     if (this.state.visionMode === 'template' && this.state.needsTrackingPoint) {
-      return this.calibration.metersPerPixel == null
-        ? 'Calibrate (📏), then tap a plate or the bar.'
-        : 'Tap a plate or the bar to start tracking.';
+      return 'Tap a plate, drag to its edge — that calibrates and starts tracking.';
     }
     if (this.framesSinceDetection > NO_BAR_WARNING_FRAMES) {
-      return 'Lost the target — tap 🎯 to re-pick it.';
+      return 'Lost the plate — tap 📏 to re-pick it.';
     }
     if (this.calibration.metersPerPixel == null) {
-      return 'Tap 📏 to calibrate.';
+      return 'Tap 📏 to select a plate.';
     }
     return null;
   }

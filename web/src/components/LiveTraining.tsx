@@ -2,11 +2,10 @@ import { useEffect, useRef, useState } from 'react';
 import CameraView from './CameraView';
 import BoundingBoxOverlay from './BoundingBoxOverlay';
 import RepCard from './RepCard';
-import CalibrationOverlay from './CalibrationOverlay';
+import PlateSelectorOverlay from './PlateSelectorOverlay';
 import DebugSheet from './DebugSheet';
 import SetSummarySheet from './SetSummarySheet';
 import PlaybackControls from './PlaybackControls';
-import TapToInitOverlay from './TapToInitOverlay';
 import {
   useTrainingEngine,
   useTrainingState,
@@ -30,9 +29,9 @@ export default function LiveTraining() {
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
 
-  const [showCalibration, setShowCalibration] = useState(false);
   const [showDebug, setShowDebug] = useState(false);
   const [showSummary, setShowSummary] = useState(false);
+  const [showPlatePicker, setShowPlatePicker] = useState(false);
   const [pendingSave, setPendingSave] = useState<SetSummary | null>(null);
 
   const [exerciseName, setExerciseName] = useState(
@@ -55,7 +54,6 @@ export default function LiveTraining() {
   }, [engine, exerciseName, loadKg, targetVelocity]);
 
   // Start the camera once the <video> element is mounted and the model is ready.
-  // Skipped if the user has already loaded a file.
   useEffect(() => {
     const video = videoRef.current;
     if (!video || !state.isModelReady) return;
@@ -71,6 +69,18 @@ export default function LiveTraining() {
       setShowSummary(true);
     }
   }, [lastSummary]);
+
+  // Auto-open the plate selector whenever we need a fresh target.
+  useEffect(() => {
+    if (state.needsTrackingPoint && state.visionMode === 'template' && state.isCameraReady) {
+      // For files, pause first so the bar is still while the user marks it.
+      if (state.mediaMode === 'file' && !state.isPaused) {
+        engine.togglePlay();
+      }
+      setShowPlatePicker(true);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [state.needsTrackingPoint, state.isCameraReady, state.visionMode]);
 
   function handleEndSet() {
     engine.endSet();
@@ -89,7 +99,7 @@ export default function LiveTraining() {
 
   function handleFilePick(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0];
-    e.target.value = ''; // allow re-picking the same file
+    e.target.value = '';
     if (!file || !videoRef.current) return;
     void engine.loadFile(videoRef.current, file);
   }
@@ -99,18 +109,14 @@ export default function LiveTraining() {
     void engine.start(videoRef.current, 'environment');
   }
 
-  function handleOpenCalibration() {
-    // Pause uploaded clips so the bar stays still while the user taps collars.
-    if (state.mediaMode === 'file' && !state.isPaused) {
-      engine.togglePlay();
-    }
-    setShowCalibration(true);
+  function handleOpenPlatePicker() {
+    if (state.mediaMode === 'file' && !state.isPaused) engine.togglePlay();
+    setShowPlatePicker(true);
   }
 
-  function handleCalibrationSave(aVideo: Point2D, bVideo: Point2D, knownMeters: number) {
-    engine.calibration.setKnownDistance(knownMeters);
-    engine.calibration.calibrateFromPoints(aVideo, bVideo);
-    setShowCalibration(false);
+  function handlePlateSave(center: Point2D, edge: Point2D, diameterMeters: number) {
+    engine.selectPlate(center, edge, diameterMeters);
+    setShowPlatePicker(false);
   }
 
   const velocityClass =
@@ -132,24 +138,6 @@ export default function LiveTraining() {
         isTracking={state.isTracking}
       />
 
-      <TapToInitOverlay
-        visible={
-          !showCalibration &&
-          state.visionMode === 'template' &&
-          state.needsTrackingPoint &&
-          state.isCameraReady &&
-          (state.mediaMode === 'live' || state.isPaused)
-        }
-        hint={
-          state.mediaMode === 'file' && !state.isPaused
-            ? 'Pause first, then tap a plate.'
-            : 'Tap the centre of a plate — bigger, distinctive targets track best.'
-        }
-        videoWidth={state.cameraWidth}
-        videoHeight={state.cameraHeight}
-        onTap={(x, y) => engine.setTrackingPoint(x, y)}
-      />
-
       <input
         ref={fileInputRef}
         type="file"
@@ -161,7 +149,7 @@ export default function LiveTraining() {
       <div className="live__hud">
         <header className="live__top">
           <div className="live__top-left">
-            <IconButton aria-label="Calibrate" onClick={handleOpenCalibration}>
+            <IconButton aria-label="Pick plate" onClick={handleOpenPlatePicker}>
               📏
             </IconButton>
             {isFile ? (
@@ -179,11 +167,6 @@ export default function LiveTraining() {
             >
               📁
             </IconButton>
-            {state.visionMode === 'template' && !state.needsTrackingPoint && (
-              <IconButton aria-label="Re-pick target" onClick={() => engine.retapToTrack()}>
-                🎯
-              </IconButton>
-            )}
           </div>
           <div className="live__meta">
             <strong>{exerciseName}</strong>
@@ -253,14 +236,12 @@ export default function LiveTraining() {
 
       <RepCard rep={lastRep} targetVelocity={targetVelocity} />
 
-      <CalibrationOverlay
-        visible={showCalibration}
+      <PlateSelectorOverlay
+        visible={showPlatePicker}
         videoWidth={state.cameraWidth}
         videoHeight={state.cameraHeight}
-        initialDistance={engine.calibration.knownDistanceMeters}
-        currentScale={engine.calibration.metersPerPixel}
-        onSave={handleCalibrationSave}
-        onCancel={() => setShowCalibration(false)}
+        onSave={handlePlateSave}
+        onCancel={() => setShowPlatePicker(false)}
       />
       <DebugSheet
         open={showDebug}
