@@ -1,7 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import CameraView from './CameraView';
 import BoundingBoxOverlay from './BoundingBoxOverlay';
-import RepCard from './RepCard';
 import PlateSelectorOverlay from './PlateSelectorOverlay';
 import DebugSheet from './DebugSheet';
 import SetSummarySheet from './SetSummarySheet';
@@ -9,7 +8,6 @@ import PlaybackControls from './PlaybackControls';
 import {
   useTrainingEngine,
   useTrainingState,
-  useLastRep,
   useLastSummary,
 } from '../state/useTraining';
 import { appendSet } from '../lib/storage';
@@ -23,7 +21,6 @@ const STORAGE_TARGET = 'bvt.targetVelocity';
 export default function LiveTraining() {
   const engine = useTrainingEngine();
   const state = useTrainingState(engine);
-  const lastRep = useLastRep(engine);
   const lastSummary = useLastSummary(engine);
 
   const videoRef = useRef<HTMLVideoElement | null>(null);
@@ -60,47 +57,33 @@ export default function LiveTraining() {
     }
   }, [lastSummary]);
 
-  // Auto-open the plate picker whenever the engine wants a fresh target and
-  // we actually have a loaded video. Auto-pauses the clip so the bar is still.
+  // Open the plate picker once a video is loaded and a plate is needed.
   useEffect(() => {
-    if (
-      state.hasVideo &&
-      state.needsTrackingPoint &&
-      state.visionMode === 'template'
-    ) {
-      if (!state.isPaused) engine.togglePlay();
-      setShowPlatePicker(true);
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [state.hasVideo, state.needsTrackingPoint, state.visionMode]);
+    if (state.hasVideo && state.needsPlate) setShowPlatePicker(true);
+  }, [state.hasVideo, state.needsPlate]);
 
   function handleEndSet() {
     engine.endSet();
   }
-
   function handleSave() {
     if (pendingSave) appendSet(pendingSave);
     setShowSummary(false);
     setPendingSave(null);
   }
-
   function handleDiscard() {
     setShowSummary(false);
     setPendingSave(null);
   }
-
   function handleFilePick(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0];
     e.target.value = '';
     if (!file || !videoRef.current) return;
     void engine.loadFile(videoRef.current, file);
   }
-
   function handleOpenPlatePicker() {
     if (!state.isPaused) engine.togglePlay();
     setShowPlatePicker(true);
   }
-
   function handlePlateSave(center: Point2D, edge: Point2D, diameterMeters: number) {
     engine.selectPlate(center, edge, diameterMeters);
     setShowPlatePicker(false);
@@ -113,26 +96,19 @@ export default function LiveTraining() {
         ? 'velocity--warn'
         : 'velocity--bad';
 
+  const analysing = state.analysisStatus === 'detecting' || state.analysisStatus === 'smoothing';
+
   // Empty state: no video loaded yet.
   if (!state.hasVideo) {
     return (
       <div className="live">
         <CameraView ref={videoRef} />
-        <input
-          ref={fileInputRef}
-          type="file"
-          accept="video/*"
-          hidden
-          onChange={handleFilePick}
-        />
+        <input ref={fileInputRef} type="file" accept="video/*" hidden onChange={handleFilePick} />
         <div className="upload-cta">
           <div className="upload-cta__inner">
-            <div className="upload-cta__icon" aria-hidden>📁</div>
+            <div className="upload-cta__icon" aria-hidden>🏋️</div>
             <h1>Upload a lift video</h1>
-            <p>
-              Pick any MP4 / MOV clip. You'll mark a plate to calibrate and
-              start tracking — that's it.
-            </p>
+            <p>Pick an MP4 / MOV clip. You'll mark a plate, then it analyses every frame.</p>
             <button
               type="button"
               className="upload-cta__button"
@@ -140,6 +116,13 @@ export default function LiveTraining() {
             >
               Choose video
             </button>
+            <ul className="tips">
+              <li>📐 Film <strong>side-on</strong> to the bar (within ~25°).</li>
+              <li>📏 Phone at <strong>waist height</strong> (chest for overhead).</li>
+              <li>🖼️ Keep the <strong>whole bar + plates</strong> in frame the entire set.</li>
+              <li>💡 <strong>Well-lit</strong>, no glare into the lens.</li>
+              <li>⚡ Fast lifts (cleans/snatches): use a <strong>high shutter speed</strong> (120–240 fps) to avoid motion blur.</li>
+            </ul>
             {state.lastError && <p className="upload-cta__error">{state.lastError}</p>}
           </div>
         </div>
@@ -152,18 +135,29 @@ export default function LiveTraining() {
       <CameraView ref={videoRef} />
       <BoundingBoxOverlay
         box={state.position?.boundingBox ?? null}
-        confidence={state.detection?.confidence ?? 0}
-        label={state.detection?.label}
-        isTracking={state.isTracking}
+        confidence={state.position?.confidence ?? 0}
+        label="plate"
+        isTracking={state.position != null}
       />
 
-      <input
-        ref={fileInputRef}
-        type="file"
-        accept="video/*"
-        hidden
-        onChange={handleFilePick}
-      />
+      <input ref={fileInputRef} type="file" accept="video/*" hidden onChange={handleFilePick} />
+
+      {analysing && (
+        <div className="analyze-overlay">
+          <div className="analyze-overlay__box">
+            <div className="analyze-overlay__label">
+              {state.analysisStatus === 'detecting' ? 'Detecting plate…' : 'Smoothing…'}
+            </div>
+            <div className="analyze-overlay__bar">
+              <div
+                className="analyze-overlay__fill"
+                style={{ width: `${Math.round(state.analysisProgress * 100)}%` }}
+              />
+            </div>
+            <div className="analyze-overlay__pct">{Math.round(state.analysisProgress * 100)}%</div>
+          </div>
+        </div>
+      )}
 
       <div className="live__hud">
         <header className="live__top">
@@ -171,7 +165,7 @@ export default function LiveTraining() {
             <IconButton aria-label="Upload another video" onClick={() => fileInputRef.current?.click()}>
               📁
             </IconButton>
-            <IconButton aria-label="Pick plate" onClick={handleOpenPlatePicker}>
+            <IconButton aria-label="Re-pick plate" onClick={handleOpenPlatePicker}>
               📏
             </IconButton>
           </div>
@@ -194,24 +188,23 @@ export default function LiveTraining() {
             <p className="live__notice live__notice--error">{state.lastError}</p>
           )}
           <div className={`velocity ${velocityClass}`}>{state.velocity.toFixed(2)}</div>
-          <div className="velocity__label">m/s · concentric</div>
+          <div className="velocity__label">m/s · at playhead</div>
           <div className="live__chips">
-            <span className="chip">#{state.repCount}</span>
-            <span className="chip">{state.phase}</span>
-            {state.detection && (
+            <span className="chip">{state.setRepCount} reps</span>
+            <span className="chip">peak {state.peakVelocity.toFixed(2)}</span>
+            {state.analysisStatus === 'done' && (
               <span
                 className={`chip ${
-                  state.detection.confidence < 0.55
+                  state.detectionRate < 0.7
                     ? 'chip--bad'
-                    : state.detection.confidence < 0.7
+                    : state.detectionRate < 0.9
                       ? 'chip--warn'
                       : 'chip--good'
                 }`}
               >
-                conf {(state.detection.confidence * 100).toFixed(0)}%
+                track {Math.round(state.detectionRate * 100)}%
               </span>
             )}
-            <span className="chip">{state.duration.toFixed(1)}s clip</span>
           </div>
         </div>
 
@@ -235,8 +228,6 @@ export default function LiveTraining() {
           </button>
         </footer>
       </div>
-
-      <RepCard rep={lastRep} targetVelocity={targetVelocity} />
 
       <PlateSelectorOverlay
         visible={showPlatePicker}

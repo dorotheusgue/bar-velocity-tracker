@@ -8,9 +8,10 @@ interface Props {
 }
 
 /**
- * Renders the smoothed bar position as a bounding box. No CSS transition —
- * at 30–60 fps a transition just makes the box visibly lag the actual bar.
- * The Kalman in BarTracker already smooths the trajectory.
+ * Renders the detected plate position as a box over the video during review.
+ * Fed from the smoothed offline trajectory (looked up at the playhead), so the
+ * box reflects exactly what was tracked — a visual sanity check before trusting
+ * the numbers.
  */
 export default function BoundingBoxOverlay({ box, confidence, label, isTracking }: Props) {
   if (!box) return null;

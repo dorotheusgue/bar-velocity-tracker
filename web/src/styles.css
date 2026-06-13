@@ -131,6 +131,86 @@ select {
   font-size: 13px;
 }
 
+.tips {
+  list-style: none;
+  margin: 22px 0 0;
+  padding: 0;
+  text-align: left;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  font-size: 13px;
+  color: var(--text-dim);
+}
+
+.tips strong {
+  color: var(--text);
+  font-weight: 600;
+}
+
+/* Analysis progress overlay --------------------------------------------- */
+.analyze-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 8;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(11, 13, 16, 0.55);
+  backdrop-filter: blur(2px);
+}
+
+.analyze-overlay__box {
+  width: min(72%, 320px);
+  background: rgba(20, 24, 29, 0.92);
+  border-radius: 16px;
+  padding: 20px;
+  text-align: center;
+}
+
+.analyze-overlay__label {
+  font-size: 15px;
+  font-weight: 600;
+  margin-bottom: 12px;
+}
+
+.analyze-overlay__bar {
+  height: 8px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.12);
+  overflow: hidden;
+}
+
+.analyze-overlay__fill {
+  height: 100%;
+  background: var(--accent);
+  border-radius: 999px;
+  transition: width 0.1s linear;
+}
+
+.analyze-overlay__pct {
+  margin-top: 8px;
+  font-size: 13px;
+  color: var(--text-dim);
+  font-variant-numeric: tabular-nums;
+}
+
+.reanalyze {
+  width: calc(100% - 32px);
+  margin: 8px 16px 0;
+  background: var(--accent);
+  color: #fff;
+  border: 0;
+  border-radius: 10px;
+  padding: 10px;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.reanalyze:disabled {
+  opacity: 0.45;
+}
+
 .camera-view {
   position: absolute;
   inset: 0;

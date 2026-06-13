@@ -1,6 +1,5 @@
 import { useEffect, useState } from 'react';
-import type { TrainingEngine } from '../lib/trainingEngine';
-import type { TrainingState } from '../lib/trainingEngine';
+import type { TrainingEngine, TrainingState } from '../lib/trainingEngine';
 
 interface Props {
   open: boolean;
@@ -16,15 +15,28 @@ interface Props {
 }
 
 interface Tuning {
-  processNoise: number;
-  measurementNoise: number;
-  zuptVelocityThreshold: number;
+  gradThreshold: number;
+  minConfidence: number;
+  colorTol: number;
+  windowSeconds: number;
+  polyOrder: number;
+  zuptVelocity: number;
   zuptDuration: number;
-  trackerMinConfidence: number;
-  trackerColorWeight: number;
 }
 
-const TUNING_KEY = 'bvt.tuning.v3';
+const TUNING_KEY = 'bvt.tuning.v4';
+
+function defaultTuning(): Tuning {
+  return {
+    gradThreshold: 40,
+    minConfidence: 0.3,
+    colorTol: 0.25,
+    windowSeconds: 0.18,
+    polyOrder: 2,
+    zuptVelocity: 0.02,
+    zuptDuration: 0.15,
+  };
+}
 
 function loadTuning(): Tuning {
   const raw = localStorage.getItem(TUNING_KEY);
@@ -38,27 +50,29 @@ function loadTuning(): Tuning {
   return defaultTuning();
 }
 
-function defaultTuning(): Tuning {
-  return {
-    processNoise: 0.1,
-    measurementNoise: 5.0,
-    zuptVelocityThreshold: 0.02,
-    zuptDuration: 0.15,
-    trackerMinConfidence: 0.55,
-    trackerColorWeight: 2.5,
-  };
-}
-
 export default function DebugSheet(props: Props) {
   const { open, onClose, engine, state } = props;
   const [tuning, setTuning] = useState<Tuning>(() => loadTuning());
 
+  // Detector knobs apply to the next analyze; smoothing knobs re-run Pass 2 instantly.
   useEffect(() => {
-    engine.applyTuning(tuning);
+    engine.applyDetectorTuning({
+      gradThreshold: tuning.gradThreshold,
+      minConfidence: tuning.minConfidence,
+      colorTol: tuning.colorTol,
+    });
+    engine.applySmoothing({
+      windowSeconds: tuning.windowSeconds,
+      polyOrder: tuning.polyOrder,
+      zuptVelocity: tuning.zuptVelocity,
+      zuptDuration: tuning.zuptDuration,
+    });
     localStorage.setItem(TUNING_KEY, JSON.stringify(tuning));
   }, [engine, tuning]);
 
   if (!open) return null;
+
+  const gOk = state.dropAccel > 7 && state.dropAccel < 13;
 
   return (
     <div className="sheet" role="dialog" aria-modal="true">
@@ -104,60 +118,75 @@ export default function DebugSheet(props: Props) {
       </section>
 
       <section>
-        <h3>Kalman filter</h3>
+        <h3>Detector (applies on re-analyze)</h3>
         <Slider
-          label="Process noise (q)"
-          value={tuning.processNoise}
-          min={0.01}
+          label="Gradient threshold"
+          value={tuning.gradThreshold}
+          min={10}
+          max={120}
+          step={5}
+          format={(v) => v.toFixed(0)}
+          onChange={(v) => setTuning({ ...tuning, gradThreshold: v })}
+        />
+        <Slider
+          label="Min confidence"
+          value={tuning.minConfidence}
+          min={0.1}
+          max={0.8}
+          step={0.05}
+          format={(v) => `${(v * 100).toFixed(0)}%`}
+          onChange={(v) => setTuning({ ...tuning, minConfidence: v })}
+        />
+        <Slider
+          label="Colour tolerance"
+          value={tuning.colorTol}
+          min={0}
           max={1}
-          step={0.01}
-          format={(v) => v.toFixed(2)}
-          onChange={(v) => setTuning({ ...tuning, processNoise: v })}
+          step={0.05}
+          format={(v) => (v === 0 ? 'off' : v.toFixed(2))}
+          onChange={(v) => setTuning({ ...tuning, colorTol: v })}
         />
-        <Slider
-          label="Measurement noise (r)"
-          value={tuning.measurementNoise}
-          min={0.5}
-          max={20}
-          step={0.5}
-          format={(v) => v.toFixed(1)}
-          onChange={(v) => setTuning({ ...tuning, measurementNoise: v })}
-        />
-        <div className="presets">
-          <button
-            type="button"
-            onClick={() => setTuning({ ...tuning, processNoise: 0.05, measurementNoise: 8 })}
-          >
-            Powerlifting
-          </button>
-          <button
-            type="button"
-            onClick={() => setTuning({ ...tuning, processNoise: 0.5, measurementNoise: 3 })}
-          >
-            Olympic
-          </button>
-          <button
-            type="button"
-            onClick={() => setTuning({ ...tuning, processNoise: 0.1, measurementNoise: 5 })}
-          >
-            Default
-          </button>
-        </div>
+        <button
+          type="button"
+          className="reanalyze"
+          onClick={() => void engine.analyze()}
+          disabled={!state.hasVideo || state.needsPlate}
+        >
+          Re-analyse video
+        </button>
       </section>
 
       <section>
-        <h3>ZUPT</h3>
+        <h3>Smoothing (instant)</h3>
         <Slider
-          label="Velocity threshold"
-          value={tuning.zuptVelocityThreshold}
+          label="Window"
+          value={tuning.windowSeconds}
+          min={0.06}
+          max={0.4}
+          step={0.02}
+          format={(v) => `${(v * 1000).toFixed(0)} ms`}
+          onChange={(v) => setTuning({ ...tuning, windowSeconds: v })}
+        />
+        <Slider
+          label="Polynomial order"
+          value={tuning.polyOrder}
+          min={2}
+          max={4}
+          step={1}
+          format={(v) => v.toFixed(0)}
+          onChange={(v) => setTuning({ ...tuning, polyOrder: v })}
+        />
+        <Slider
+          label="ZUPT velocity"
+          value={tuning.zuptVelocity}
           min={0.005}
           max={0.1}
           step={0.005}
           format={(v) => `${v.toFixed(3)} m/s`}
-          onChange={(v) => setTuning({ ...tuning, zuptVelocityThreshold: v })}
+          onChange={(v) => setTuning({ ...tuning, zuptVelocity: v })}
         />
         <Slider
-          label="Quiet duration"
+          label="ZUPT quiet time"
           value={tuning.zuptDuration}
           min={0.05}
           max={0.5}
@@ -168,67 +197,18 @@ export default function DebugSheet(props: Props) {
       </section>
 
       <section>
-        <h3>Detection</h3>
-        <div className="row">
-          <span>Mode</span>
-          <span className="row__value">{state.visionMode}</span>
-        </div>
-        <div className="presets">
-          <button
-            type="button"
-            onClick={() => void engine.setVisionMode('template')}
-            disabled={state.visionMode === 'template'}
-          >
-            Tap to track
-          </button>
-          <button
-            type="button"
-            onClick={() => void engine.setVisionMode('coco-ssd')}
-            disabled={state.visionMode === 'coco-ssd'}
-          >
-            Auto (downloads ~6 MB)
-          </button>
-        </div>
-        {state.visionMode === 'coco-ssd' && !state.isModelReady && (
-          <p className="row" style={{ color: 'var(--text-dim)' }}>
-            Loading TensorFlow.js…
-          </p>
-        )}
-        {state.visionMode === 'template' && (
-          <>
-            <Slider
-              label="Min confidence"
-              value={tuning.trackerMinConfidence}
-              min={0.3}
-              max={0.9}
-              step={0.05}
-              format={(v) => `${(v * 100).toFixed(0)}%`}
-              onChange={(v) => setTuning({ ...tuning, trackerMinConfidence: v })}
-            />
-            <Slider
-              label="Colour weight"
-              value={tuning.trackerColorWeight}
-              min={0}
-              max={5}
-              step={0.25}
-              format={(v) => (v === 0 ? 'off (grayscale only)' : `${v.toFixed(2)}×`)}
-              onChange={(v) => setTuning({ ...tuning, trackerColorWeight: v })}
-            />
-          </>
-        )}
-      </section>
-
-      <section>
-        <h3>Live</h3>
-        <Row label="Velocity" value={`${state.velocity.toFixed(3)} m/s`} />
-        <Row label="Phase" value={state.phase} />
-        <Row label="Tracking" value={state.isTracking ? 'yes' : 'no'} />
-        <Row label="Detection" value={state.detection?.label ?? '—'} />
+        <h3>Analysis</h3>
+        <Row label="Status" value={state.analysisStatus} />
+        <Row label="Velocity @ playhead" value={`${state.velocity.toFixed(3)} m/s`} />
+        <Row label="Peak velocity" value={`${state.peakVelocity.toFixed(3)} m/s`} />
+        <Row label="Reps" value={String(state.setRepCount)} />
+        <Row label="Track rate" value={`${Math.round(state.detectionRate * 100)}%`} />
+        <Row label="Median conf." value={`${Math.round(state.medianConfidence * 100)}%`} />
         <Row
-          label="Confidence"
-          value={state.detection ? `${(state.detection.confidence * 100).toFixed(0)}%` : '—'}
+          label="Max drop accel"
+          value={`${state.dropAccel.toFixed(1)} m/s²${gOk ? ' ✓≈g' : ''}`}
         />
-        <Row label="FPS" value={state.fps.toFixed(1)} />
+        <Row label="FPS" value={state.fps.toFixed(0)} />
         <Row label="Video" value={`${state.videoWidth}×${state.videoHeight}`} />
       </section>
     </div>

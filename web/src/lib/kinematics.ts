@@ -74,6 +74,21 @@ export class KinematicsEngine {
   }
 
   /**
+   * Directly emit a pre-computed (velocity, position, t) sample to listeners.
+   * Used by the offline pipeline to replay a fully-smoothed trajectory through
+   * the existing rep detector. Position is delivered before velocity so the
+   * rep detector's current position is up to date when velocity is processed.
+   */
+  emit(velocity: number, positionMeters: number, t: number) {
+    this.currentVelocity = velocity;
+    this.currentPositionMeters = positionMeters;
+    for (const l of this.listeners) {
+      l.onPosition(positionMeters, t);
+      l.onVelocity(velocity, t);
+    }
+  }
+
+  /**
    * Least-squares slope of y vs t over the samples within `windowSeconds`
    * of video time, clamped between `minWindowSamples` and `maxWindowSamples`
    * so we behave sanely at the extremes (10 fps webcam through 240 fps phone
