@@ -1,6 +1,6 @@
 import { loadVideoFile, type VideoFileHandle } from './videoFile';
 import { drawVideoToContext, probeFrameRate } from './frameWalker';
-import { KnownRadiusCircleDetector } from './circleDetector';
+import { ColorBlobTracker } from './colorTracker';
 import { buildTrajectory, type RawTrajectory } from './trajectory';
 import {
   smoothTrajectory,
@@ -18,9 +18,9 @@ import type { BarPosition, Rep, SetSummary } from '../types';
 export type AnalysisStatus = 'idle' | 'detecting' | 'smoothing' | 'done';
 
 export interface DetectorTuning {
-  gradThreshold: number;
+  hueTolerance: number;
+  satMin: number;
   minConfidence: number;
-  colorTol: number;
 }
 
 export interface TrainingState {
@@ -67,7 +67,7 @@ export class TrainingEngine {
   readonly metrics = new MetricsEngine();
 
   private readonly ctx: CanvasRenderingContext2D;
-  private detector: KnownRadiusCircleDetector | null = null;
+  private detector: ColorBlobTracker | null = null;
   private raw: RawTrajectory | null = null;
   private smoothed: SmoothedTrajectory | null = null;
 
@@ -89,7 +89,7 @@ export class TrainingEngine {
   targetVelocity = 0.6;
 
   // Tuning (persisted by the UI; applied on (re)analyze).
-  detectorTuning: DetectorTuning = { gradThreshold: 40, minConfidence: 0.3, colorTol: 0.25 };
+  detectorTuning: DetectorTuning = { hueTolerance: 18, satMin: 0.25, minConfidence: 0.35 };
   smoothing: Required<SmoothingOptions> = {
     polyOrder: 2,
     windowSeconds: 0.18,
@@ -219,23 +219,28 @@ export class TrainingEngine {
 
   // MARK: - Plate selection (seed + calibrate, then analyze)
 
+  /**
+   * The user fits a square over the plate. `centerVideo` is its centre and
+   * `radiusPx` is half its side (= plate radius), both in video pixels. The
+   * square side maps to the plate diameter for scale; its interior is the
+   * colour sample.
+   */
   selectPlate(
     centerVideo: { x: number; y: number },
-    edgeVideo: { x: number; y: number },
+    radiusPx: number,
     diameterMeters: number
   ) {
     if (!this.video) return;
-    this.calibration.calibrateFromPlate(centerVideo, edgeVideo, diameterMeters);
-    const dx = centerVideo.x - edgeVideo.x;
-    const dy = centerVideo.y - edgeVideo.y;
-    this.radiusPx = Math.sqrt(dx * dx + dy * dy);
+    const edge = { x: centerVideo.x + radiusPx, y: centerVideo.y };
+    this.calibration.calibrateFromPlate(centerVideo, edge, diameterMeters);
+    this.radiusPx = Math.max(4, radiusPx);
     this.seedCenter = { x: centerVideo.x, y: centerVideo.y };
 
-    this.detector = new KnownRadiusCircleDetector({
+    this.detector = new ColorBlobTracker({
       radiusPx: this.radiusPx,
-      gradThreshold: this.detectorTuning.gradThreshold,
+      hueTolerance: this.detectorTuning.hueTolerance,
+      satMin: this.detectorTuning.satMin,
       minConfidence: this.detectorTuning.minConfidence,
-      colorTol: this.detectorTuning.colorTol,
     });
     // Seed colour from the frame the user marked.
     drawVideoToContext(this.video, this.ctx);
@@ -350,9 +355,9 @@ export class TrainingEngine {
   applyDetectorTuning(t: Partial<DetectorTuning>) {
     this.detectorTuning = { ...this.detectorTuning, ...t };
     if (this.detector) {
-      this.detector.setGradThreshold(this.detectorTuning.gradThreshold);
+      this.detector.setHueTolerance(this.detectorTuning.hueTolerance);
+      this.detector.setSatMin(this.detectorTuning.satMin);
       this.detector.setMinConfidence(this.detectorTuning.minConfidence);
-      this.detector.setColorTol(this.detectorTuning.colorTol);
     }
   }
 

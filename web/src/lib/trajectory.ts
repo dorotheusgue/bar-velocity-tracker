@@ -1,5 +1,5 @@
 import { walkVideo, type FrameSample } from './frameWalker';
-import { KnownRadiusCircleDetector } from './circleDetector';
+import { ColorBlobTracker } from './colorTracker';
 
 /** One detected sample. `confidence` 0 means no detection that frame. */
 export interface TrajectoryPoint {
@@ -34,7 +34,7 @@ export interface BuildOptions {
 export async function buildTrajectory(
   video: HTMLVideoElement,
   ctx: CanvasRenderingContext2D,
-  detector: KnownRadiusCircleDetector,
+  detector: ColorBlobTracker,
   opts: BuildOptions
 ): Promise<RawTrajectory> {
   const points: TrajectoryPoint[] = [];

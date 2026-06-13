@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import CameraView from './CameraView';
 import BoundingBoxOverlay from './BoundingBoxOverlay';
-import PlateSelectorOverlay from './PlateSelectorOverlay';
+import PlateSquareOverlay from './PlateSquareOverlay';
 import DebugSheet from './DebugSheet';
 import SetSummarySheet from './SetSummarySheet';
 import PlaybackControls from './PlaybackControls';
@@ -84,8 +84,8 @@ export default function LiveTraining() {
     if (!state.isPaused) engine.togglePlay();
     setShowPlatePicker(true);
   }
-  function handlePlateSave(center: Point2D, edge: Point2D, diameterMeters: number) {
-    engine.selectPlate(center, edge, diameterMeters);
+  function handlePlateSave(center: Point2D, radiusPx: number, diameterMeters: number) {
+    engine.selectPlate(center, radiusPx, diameterMeters);
     setShowPlatePicker(false);
   }
 
@@ -121,6 +121,7 @@ export default function LiveTraining() {
               <li>📏 Phone at <strong>waist height</strong> (chest for overhead).</li>
               <li>🖼️ Keep the <strong>whole bar + plates</strong> in frame the entire set.</li>
               <li>💡 <strong>Well-lit</strong>, no glare into the lens.</li>
+              <li>🟥 Tracking locks onto <strong>colour</strong> — works best on a <strong>coloured bumper plate</strong>. For iron/silver plates, stick a strip of <strong>bright tape</strong> on the bar end and put the square over that.</li>
               <li>⚡ Fast lifts (cleans/snatches): use a <strong>high shutter speed</strong> (120–240 fps) to avoid motion blur.</li>
             </ul>
             {state.lastError && <p className="upload-cta__error">{state.lastError}</p>}
@@ -229,7 +230,7 @@ export default function LiveTraining() {
         </footer>
       </div>
 
-      <PlateSelectorOverlay
+      <PlateSquareOverlay
         visible={showPlatePicker}
         videoWidth={state.videoWidth}
         videoHeight={state.videoHeight}

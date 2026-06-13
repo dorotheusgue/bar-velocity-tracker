@@ -15,22 +15,22 @@ interface Props {
 }
 
 interface Tuning {
-  gradThreshold: number;
+  hueTolerance: number;
+  satMin: number;
   minConfidence: number;
-  colorTol: number;
   windowSeconds: number;
   polyOrder: number;
   zuptVelocity: number;
   zuptDuration: number;
 }
 
-const TUNING_KEY = 'bvt.tuning.v4';
+const TUNING_KEY = 'bvt.tuning.v5';
 
 function defaultTuning(): Tuning {
   return {
-    gradThreshold: 40,
-    minConfidence: 0.3,
-    colorTol: 0.25,
+    hueTolerance: 18,
+    satMin: 0.25,
+    minConfidence: 0.35,
     windowSeconds: 0.18,
     polyOrder: 2,
     zuptVelocity: 0.02,
@@ -57,9 +57,9 @@ export default function DebugSheet(props: Props) {
   // Detector knobs apply to the next analyze; smoothing knobs re-run Pass 2 instantly.
   useEffect(() => {
     engine.applyDetectorTuning({
-      gradThreshold: tuning.gradThreshold,
+      hueTolerance: tuning.hueTolerance,
+      satMin: tuning.satMin,
       minConfidence: tuning.minConfidence,
-      colorTol: tuning.colorTol,
     });
     engine.applySmoothing({
       windowSeconds: tuning.windowSeconds,
@@ -118,15 +118,24 @@ export default function DebugSheet(props: Props) {
       </section>
 
       <section>
-        <h3>Detector (applies on re-analyze)</h3>
+        <h3>Colour tracker (applies on re-analyse)</h3>
         <Slider
-          label="Gradient threshold"
-          value={tuning.gradThreshold}
-          min={10}
-          max={120}
-          step={5}
-          format={(v) => v.toFixed(0)}
-          onChange={(v) => setTuning({ ...tuning, gradThreshold: v })}
+          label="Hue tolerance"
+          value={tuning.hueTolerance}
+          min={5}
+          max={60}
+          step={1}
+          format={(v) => `${v.toFixed(0)}°`}
+          onChange={(v) => setTuning({ ...tuning, hueTolerance: v })}
+        />
+        <Slider
+          label="Saturation min"
+          value={tuning.satMin}
+          min={0.05}
+          max={0.7}
+          step={0.05}
+          format={(v) => v.toFixed(2)}
+          onChange={(v) => setTuning({ ...tuning, satMin: v })}
         />
         <Slider
           label="Min confidence"
@@ -136,15 +145,6 @@ export default function DebugSheet(props: Props) {
           step={0.05}
           format={(v) => `${(v * 100).toFixed(0)}%`}
           onChange={(v) => setTuning({ ...tuning, minConfidence: v })}
-        />
-        <Slider
-          label="Colour tolerance"
-          value={tuning.colorTol}
-          min={0}
-          max={1}
-          step={0.05}
-          format={(v) => (v === 0 ? 'off' : v.toFixed(2))}
-          onChange={(v) => setTuning({ ...tuning, colorTol: v })}
         />
         <button
           type="button"
