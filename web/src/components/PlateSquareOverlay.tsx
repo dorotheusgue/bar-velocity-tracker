@@ -9,6 +9,10 @@ interface Props {
   visible: boolean;
   videoWidth: number;
   videoHeight: number;
+  /** Scrubbing inside the picker so the user can find a clear frame first. */
+  currentTime: number;
+  duration: number;
+  onScrub: (t: number) => void;
   /** centre + half-side (= plate radius) in VIDEO pixels, plus diameter (m). */
   onSave: (centerVideo: Point2D, radiusPx: number, diameterMeters: number) => void;
   onCancel: () => void;
@@ -30,6 +34,9 @@ export default function PlateSquareOverlay({
   visible,
   videoWidth,
   videoHeight,
+  currentTime,
+  duration,
+  onScrub,
   onSave,
   onCancel,
 }: Props) {
@@ -201,6 +208,18 @@ export default function PlateSquareOverlay({
       )}
 
       <footer className="cal-overlay__bottom" data-chrome>
+        <div className="cal-overlay__scrub">
+          <span className="cal-overlay__scrub-label">Frame</span>
+          <input
+            type="range"
+            min={0}
+            max={duration || 0.001}
+            step={0.01}
+            value={Math.min(currentTime, duration || currentTime)}
+            onChange={(e) => onScrub(parseFloat(e.target.value))}
+            aria-label="Scrub to a clear frame"
+          />
+        </div>
         <label className="cal-overlay__field">
           <span>Plate diameter</span>
           <input

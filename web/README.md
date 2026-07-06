@@ -1,244 +1,85 @@
 # Bar Velocity Tracker — Web
 
-React + Vite + TypeScript. Same pipeline as the iOS app (camera → tracker →
-Kalman → kinematics → reps → metrics), runs in any modern browser.
+A Metric/RepSpeed-style velocity-based-training analyser that runs entirely in
+the browser. Upload a lift video, fit a square over a plate, and it tracks the
+bar through every frame, then shows the bar path, a velocity–time chart, and
+per-rep VBT metrics. No model downloads, no server — ~60 KB gzipped, all
+analysis on-device.
 
-**Default tracker is tap-to-init template matching** (RepSpeed-style): you tap
-the bar once, classical normalized cross-correlation tracks it from there. No
-model download, ~60 KB initial bundle, frame-perfect accuracy because the ROI
-is exactly where you pointed.
+## How it works
 
-An optional COCO-SSD auto-detector (the original heavy path) is still available
-behind a toggle in the debug sheet — it lazy-loads ~6 MB of TensorFlow.js only
-if you ask for it.
+**Record-then-analyse, offline two-pass** (the same model Metric uses):
 
-## Requirements
+```
+videoFile.ts           object-URL loader, first-frame paint fix for iOS Safari
+   │
+frameWalker.ts         Pass 1 driver — sequential decode at reduced playbackRate
+   │                   captured per-frame via requestVideoFrameCallback, then
+   │                   deterministic seek-backfill of any missed frames.
+   │                   Every frame index processed exactly once.
+   ▼
+colorTracker.ts        Colour-blob plate tracker: HSV mask of the marked
+   │                   plate's colour inside a predicted search window →
+   │                   connected components → best blob by size × proximity →
+   │                   sub-pixel centroid. Blur-tolerant: a smeared coloured
+   │                   plate is still a coloured region.
+   ▼
+trajectory.ts          Dense (t, x, y, confidence) trajectory; per-frame search
+   │                   window predicted from nearest detections on either side.
+   ▼
+offlineKinematics.ts   Pass 2 — gap-fill, zero-phase Savitzky–Golay smoothing
+   │  savitzkyGolay.ts and velocity from the same SG fit's derivative kernel
+   │                   (no lag, no peak clipping), non-causal ZUPT.
+   ▼
+repDetector.ts         Velocity-threshold state machine → Rep per concentric
+metrics.ts             Set aggregates: avg MCV, avg peak, velocity loss, best rep
+storage.ts             localStorage sessions, grouped by day (History tab)
+```
 
-* Node 20+
-* A modern browser that supports `getUserMedia` + WebGL (Safari 16+, Chrome,
-  Firefox, Edge)
-* For phones, **HTTPS is mandatory** — browsers only expose the camera over a
-  secure context. Localhost is treated as secure for development.
+Orchestrated by `trainingEngine.ts` (`analyze()` → progress → results state).
+Smoothing-knob changes re-run only Pass 2 from the cached trajectory.
 
-## Run locally
+## Using it
+
+1. **Upload** an MP4/MOV clip (tips shown on the start screen).
+2. **Fit the square**: scrub to a clear frame, drag the square over a plate
+   (pinch or corner handle to resize), confirm the plate diameter
+   (450 mm default — Olympic), Save. The square is both the **scale**
+   (side = diameter) and the **colour sample** the tracker locks onto.
+3. Analysis runs with a progress bar (faster than real-time on most clips).
+4. **Review**: bar path drawn over the video (traversed portion highlighted),
+   plate marker at the playhead, velocity readout, and a results panel with
+   set stats, a velocity chart (drag it to scrub; rep spans shaded), and a
+   tappable per-rep list.
+5. **Save set** → History tab (grouped by day, MCV trend per session).
+
+### What tracks well
+
+- **Coloured bumper plates** (red/blue/yellow/green) — ideal.
+- Iron/silver/black plates: put a strip of **bright tape** on the bar end and
+  fit the square over that. Colour is the signal; grey has none.
+- Side-on camera (≤ ~25° off-axis), well-lit, whole bar in frame.
+- Fast lifts: record at high shutter speed / 120–240 fps to limit motion blur.
+
+The **track %** chip is honest — below ~70 % means the numbers aren't
+trustworthy; re-fit the square or improve the recording.
+
+## Debug sheet (⚙️)
+
+- Exercise / load / target velocity (colour-codes the readout and rep list).
+- Colour tracker: hue tolerance, saturation min, min confidence
+  (require **Re-analyse**).
+- Smoothing: SG window & order, ZUPT thresholds (instant — Pass 2 only).
+- Readouts incl. **Max drop accel**: on any bar drop this should read ≈ 9.81
+  m/s², validating the whole pixels→metres→time chain end-to-end.
+
+## Development
 
 ```bash
-cd web
 npm install
-npm run dev -- --host
+npm run dev        # http://localhost:5173
+npm run typecheck
+npm run build      # static dist/, deploys anywhere (vercel.json included)
 ```
 
-Open the printed URL on a phone on the same Wi-Fi. iOS Safari requires HTTPS
-once you leave `localhost`; the easiest local fix is [`ngrok`](https://ngrok.com)
-or `vite --https` with a local cert (e.g. `mkcert`):
-
-```bash
-mkcert localhost  # produces localhost.pem + localhost-key.pem
-npm run dev -- --host --https --cert localhost.pem --key localhost-key.pem
-```
-
-## Build
-
-```bash
-npm run build       # outputs dist/
-npm run preview     # serves dist/ on :4173
-```
-
-The `dist/` folder is a static site — drop it on Vercel, Netlify, GitHub
-Pages, S3+CloudFront, or any CDN. All required headers are default; no
-runtime server is needed.
-
-## Using the app
-
-Two sources, same pipeline:
-
-**Live camera** (default on launch)
-
-| Tap | What it does |
-|---|---|
-| 📏 | Calibration sheet (tap two collars of a bar of known length) |
-| 🔄 | Toggle front / rear camera |
-| 📁 | Upload a recorded video instead |
-| ⚙️ | Debug panel: Kalman/ZUPT sliders, exercise, load, target velocity |
-| ⏹ End Set | Finalise the current set; opens the summary with **Save** to persist |
-
-**Uploaded video** (tap 📁, pick any local clip)
-
-| Tap | What it does |
-|---|---|
-| 📏 | Calibrate against the loaded clip (pause first, then tap both collars) |
-| 📷 | Switch back to the live camera |
-| 📁 | Pick a different video |
-| ▶ / ⏸ | Play / pause analysis |
-| ⤺ | Restart from frame 0 (also resets the rep counter) |
-| Scrub | Jump to any point in the clip; analysis resets to avoid bogus velocities |
-| ⏹ End Set | Same as live mode — finalise and save |
-
-Per-frame timestamps come from `video.currentTime`, so velocities stay in real m/s regardless of playback speed — slow-motion phone clips work fine.
-
-**Supported file formats.** Anything the browser can decode. iPhones record HEVC/H.265 in `.mov`; Safari plays these natively, Chrome on Android usually does too, but if a clip fails to load, re-export to MP4/H.264 (most editors and `ffmpeg -c:v libx264` do this).
-
-The History tab is the same for both — past sessions grouped by day; tap a set to open the chart.
-
-## Detection — two modes
-
-**Default: tap-to-track (template matching).** When you start the camera or
-load a video, the app shows a crosshair overlay. Tap the centre of the bar.
-We grab a 32×32 grayscale patch around that point and, on every subsequent
-frame, slide it through a small search window using normalized cross-
-correlation. Lightweight, accurate, runs at full frame rate in plain JS.
-
-* If the tracker loses the bar (large lighting change, bar leaves frame), the
-  overlay reappears — tap again to resume.
-* For uploaded videos: pause first, tap, then play.
-* The same approach is what RepSpeed/iLOAD use; MyJump 2 uses a related "tap
-  two frames" pattern for jump height.
-
-**Optional: COCO-SSD auto-detect.** Toggle this from the debug sheet (⚙️) if
-you don't want to tap. TF.js loads on demand (~6 MB). Generic 80-class
-detector, less accurate than tap-to-track for barbells specifically, but
-hands-off.
-
-## COCO-SSD limitation (if you enable it)
-
-COCO-SSD is a generic 80-class object detector. It does not know what a barbell
-is. The web detector compensates by:
-
-1. Filtering for high-confidence detections of visually-similar COCO classes
-   (`sports ball`, `baseball bat`, `frisbee`, `tennis racket`, …).
-2. Rewarding wide-aspect-ratio boxes (bars are long horizontal objects).
-3. Tracking the single best-scoring candidate per frame.
-
-This works as a demo and for plates-from-the-front, but it is not production
-accurate. For real-world coaching, train a YOLOv8n model on a labeled barbell
-dataset and ship it.
-
-### Swapping in a trained YOLOv8n model
-
-1. Train + export (see the iOS README for the dataset / training section):
-
-   ```python
-   from ultralytics import YOLO
-   model = YOLO("runs/detect/barbell_detector/weights/best.pt")
-   model.export(format="tfjs", imgsz=640, half=False, int8=False)
-   # produces a barbell_detector_web_model/ folder with model.json + shard bins
-   ```
-
-2. Drop the exported folder into `web/public/models/barbell_detector/` so the
-   browser can fetch `model.json`.
-
-3. Implement a new `BarDetector` in `src/lib/detector.ts`:
-
-   ```ts
-   import * as tf from '@tensorflow/tfjs';
-
-   export class YoloBarDetector implements BarDetector {
-     ready: Promise<void>;
-     private model: tf.GraphModel | null = null;
-
-     constructor() {
-       this.ready = tf.loadGraphModel('/models/barbell_detector/model.json')
-         .then((m) => { this.model = m; });
-     }
-
-     async detect(video, timestamp) {
-       if (!this.model || video.readyState < 2) return null;
-       const tensor = tf.tidy(() =>
-         tf.image
-           .resizeBilinear(tf.browser.fromPixels(video), [640, 640])
-           .expandDims(0)
-           .div(255)
-       );
-       const output = (await this.model.executeAsync(tensor)) as tf.Tensor;
-       // ... post-process to NMS boxes, pick highest-confidence barbell ...
-       tensor.dispose();
-       output.dispose();
-       return /* BarDetection */ null;
-     }
-   }
-   ```
-
-4. Swap the instantiation in `TrainingEngine`:
-
-   ```ts
-   this.detector = new YoloBarDetector();
-   ```
-
-The rest of the pipeline (tracker, kinematics, rep detector) is detector-agnostic.
-
-## Architecture
-
-```
-camera.ts / videoFile.ts   live camera or uploaded clip
-   │
-   ▼
-vision.ts                  TemplateTrackerPipeline (default, ~60 KB)
-                           or CocoSsdPipeline (optional, lazy ~6 MB)
-   │
-   ▼
-barTracker.ts              KalmanFilter1D smooths yPixel; rolling history
-   │
-   ▼
-kinematics.ts          px → m, windowed least-squares slope, ZUPT
-   │                   (subscribers receive velocity & position streams)
-   ▼
-repDetector.ts         State machine emits Rep on each concentric completion
-   │
-   ▼
-metrics.ts             Live V-loss, avg MCV, peak, best rep; emits SetSummary
-   │
-   ▼
-storage.ts             localStorage — sessions grouped by day
-```
-
-All glue lives in `trainingEngine.ts`. React only renders the state it
-exposes via `useTrainingState`.
-
-## Kalman tuning
-
-Same defaults and ranges as the iOS version. The debug panel persists tuning
-in `localStorage` under `bvt.tuning.v1`.
-
-| Parameter | Effect | Default |
-|---|---|---|
-| Process noise `q` | Higher = more responsive, noisier | 0.10 |
-| Measurement noise `r` | Higher = smoother but more lag | 5.0 |
-| ZUPT velocity threshold | Below this, bar is "stationary" | 0.02 m/s |
-| ZUPT quiet duration | Time below threshold to trigger ZUPT | 0.15 s |
-
-Presets: **Powerlifting** (q=0.05, r=8.0), **Olympic** (q=0.5, r=3.0),
-**Default** (q=0.1, r=5.0).
-
-## Calibration
-
-Pixel → meter scale derived from a single two-tap calibration:
-
-1. Tap 📏.
-2. Enter the bar's collar-to-collar length (default 2.2 m).
-3. Tap both collars on the camera image.
-4. Save.
-
-The scale is keyed by `(facingMode × negotiated camera resolution)` so swapping
-cameras prompts a fresh calibration.
-
-## Deploying
-
-| Host | One-liner |
-|---|---|
-| Vercel | `npx vercel --prod` from `web/` |
-| Netlify | `npx netlify deploy --prod --dir=dist` after `npm run build` |
-| GitHub Pages | `npm run build`, push `dist/` to `gh-pages` branch; set `base: '/<repo>/'` in `vite.config.ts` |
-| Cloudflare Pages | Connect repo, build command `npm run build`, output `web/dist` |
-
-Just remember: HTTPS is mandatory for the camera to work on a real phone.
-
-## Browser limits to know about
-
-* iOS Safari requires the camera permission prompt to be initiated by a user
-  gesture and re-prompts every session. The app starts the camera in
-  `useEffect`, which Safari treats as user-initiated when wrapped in a page
-  navigation; if the camera fails to start, tapping the screen once usually
-  unblocks it.
-* COCO-SSD on mobile WebGL runs ~10–25 fps on mid-tier phones, vs. ~60 fps
-  for native Vision. A trained YOLOv8n in TFJS runs closer to 15–30 fps.
-* `performance.now()` is the time source. Timestamps are in seconds.
+React + Vite + TypeScript. No runtime dependencies beyond React.

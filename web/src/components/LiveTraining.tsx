@@ -1,18 +1,13 @@
 import { useEffect, useRef, useState } from 'react';
 import CameraView from './CameraView';
-import BoundingBoxOverlay from './BoundingBoxOverlay';
+import TrackingOverlay from './TrackingOverlay';
 import PlateSquareOverlay from './PlateSquareOverlay';
 import DebugSheet from './DebugSheet';
-import SetSummarySheet from './SetSummarySheet';
 import PlaybackControls from './PlaybackControls';
-import {
-  useTrainingEngine,
-  useTrainingState,
-  useLastSummary,
-} from '../state/useTraining';
+import ResultsPanel from './ResultsPanel';
+import { useTrainingEngine, useTrainingState } from '../state/useTraining';
 import { appendSet } from '../lib/storage';
 import type { Point2D } from '../lib/coords';
-import type { SetSummary } from '../types';
 
 const STORAGE_EXERCISE = 'bvt.exerciseName';
 const STORAGE_LOAD = 'bvt.loadKg';
@@ -21,15 +16,12 @@ const STORAGE_TARGET = 'bvt.targetVelocity';
 export default function LiveTraining() {
   const engine = useTrainingEngine();
   const state = useTrainingState(engine);
-  const lastSummary = useLastSummary(engine);
 
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
 
   const [showDebug, setShowDebug] = useState(false);
-  const [showSummary, setShowSummary] = useState(false);
   const [showPlatePicker, setShowPlatePicker] = useState(false);
-  const [pendingSave, setPendingSave] = useState<SetSummary | null>(null);
 
   const [exerciseName, setExerciseName] = useState(
     () => localStorage.getItem(STORAGE_EXERCISE) ?? 'Back Squat'
@@ -50,43 +42,31 @@ export default function LiveTraining() {
     localStorage.setItem(STORAGE_TARGET, String(targetVelocity));
   }, [engine, exerciseName, loadKg, targetVelocity]);
 
-  useEffect(() => {
-    if (lastSummary) {
-      setPendingSave(lastSummary);
-      setShowSummary(true);
-    }
-  }, [lastSummary]);
-
   // Open the plate picker once a video is loaded and a plate is needed.
   useEffect(() => {
     if (state.hasVideo && state.needsPlate) setShowPlatePicker(true);
   }, [state.hasVideo, state.needsPlate]);
 
-  function handleEndSet() {
-    engine.endSet();
-  }
-  function handleSave() {
-    if (pendingSave) appendSet(pendingSave);
-    setShowSummary(false);
-    setPendingSave(null);
-  }
-  function handleDiscard() {
-    setShowSummary(false);
-    setPendingSave(null);
-  }
   function handleFilePick(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0];
     e.target.value = '';
     if (!file || !videoRef.current) return;
     void engine.loadFile(videoRef.current, file);
   }
+
   function handleOpenPlatePicker() {
     if (!state.isPaused) engine.togglePlay();
     setShowPlatePicker(true);
   }
+
   function handlePlateSave(center: Point2D, radiusPx: number, diameterMeters: number) {
     engine.selectPlate(center, radiusPx, diameterMeters);
     setShowPlatePicker(false);
+  }
+
+  function handleSaveSet() {
+    const summary = engine.saveSet();
+    if (summary) appendSet(summary);
   }
 
   const velocityClass =
@@ -96,7 +76,9 @@ export default function LiveTraining() {
         ? 'velocity--warn'
         : 'velocity--bad';
 
-  const analysing = state.analysisStatus === 'detecting' || state.analysisStatus === 'smoothing';
+  const analysing =
+    state.analysisStatus === 'detecting' || state.analysisStatus === 'smoothing';
+  const done = state.analysisStatus === 'done';
 
   // Empty state: no video loaded yet.
   if (!state.hasVideo) {
@@ -108,7 +90,7 @@ export default function LiveTraining() {
           <div className="upload-cta__inner">
             <div className="upload-cta__icon" aria-hidden>🏋️</div>
             <h1>Upload a lift video</h1>
-            <p>Pick an MP4 / MOV clip. You'll mark a plate, then it analyses every frame.</p>
+            <p>Pick an MP4 / MOV clip. Fit a square on a plate — the analysis does the rest.</p>
             <button
               type="button"
               className="upload-cta__button"
@@ -121,7 +103,7 @@ export default function LiveTraining() {
               <li>📏 Phone at <strong>waist height</strong> (chest for overhead).</li>
               <li>🖼️ Keep the <strong>whole bar + plates</strong> in frame the entire set.</li>
               <li>💡 <strong>Well-lit</strong>, no glare into the lens.</li>
-              <li>🟥 Tracking locks onto <strong>colour</strong> — works best on a <strong>coloured bumper plate</strong>. For iron/silver plates, stick a strip of <strong>bright tape</strong> on the bar end and put the square over that.</li>
+              <li>🟥 Tracking locks onto <strong>colour</strong> — a <strong>coloured bumper plate</strong> works best. For iron/silver plates, stick <strong>bright tape</strong> on the bar end and mark that.</li>
               <li>⚡ Fast lifts (cleans/snatches): use a <strong>high shutter speed</strong> (120–240 fps) to avoid motion blur.</li>
             </ul>
             {state.lastError && <p className="upload-cta__error">{state.lastError}</p>}
@@ -134,11 +116,13 @@ export default function LiveTraining() {
   return (
     <div className="live">
       <CameraView ref={videoRef} />
-      <BoundingBoxOverlay
-        box={state.position?.boundingBox ?? null}
-        confidence={state.position?.confidence ?? 0}
-        label="plate"
-        isTracking={state.position != null}
+      <TrackingOverlay
+        videoWidth={state.videoWidth}
+        videoHeight={state.videoHeight}
+        pathPoints={state.pathPoints}
+        position={state.position}
+        plateRadiusPx={state.plateRadiusPx}
+        currentTime={state.currentTime}
       />
 
       <input ref={fileInputRef} type="file" accept="video/*" hidden onChange={handleFilePick} />
@@ -147,7 +131,7 @@ export default function LiveTraining() {
         <div className="analyze-overlay">
           <div className="analyze-overlay__box">
             <div className="analyze-overlay__label">
-              {state.analysisStatus === 'detecting' ? 'Detecting plate…' : 'Smoothing…'}
+              {state.analysisStatus === 'detecting' ? 'Tracking plate…' : 'Smoothing…'}
             </div>
             <div className="analyze-overlay__bar">
               <div
@@ -155,7 +139,9 @@ export default function LiveTraining() {
                 style={{ width: `${Math.round(state.analysisProgress * 100)}%` }}
               />
             </div>
-            <div className="analyze-overlay__pct">{Math.round(state.analysisProgress * 100)}%</div>
+            <div className="analyze-overlay__pct">
+              {Math.round(state.analysisProgress * 100)}%
+            </div>
           </div>
         </div>
       )}
@@ -163,10 +149,13 @@ export default function LiveTraining() {
       <div className="live__hud">
         <header className="live__top">
           <div className="live__top-left">
-            <IconButton aria-label="Upload another video" onClick={() => fileInputRef.current?.click()}>
+            <IconButton
+              aria-label="Upload another video"
+              onClick={() => fileInputRef.current?.click()}
+            >
               📁
             </IconButton>
-            <IconButton aria-label="Re-pick plate" onClick={handleOpenPlatePicker}>
+            <IconButton aria-label="Re-fit plate square" onClick={handleOpenPlatePicker}>
               📏
             </IconButton>
           </div>
@@ -188,25 +177,30 @@ export default function LiveTraining() {
           {state.lastError && (
             <p className="live__notice live__notice--error">{state.lastError}</p>
           )}
-          <div className={`velocity ${velocityClass}`}>{state.velocity.toFixed(2)}</div>
-          <div className="velocity__label">m/s · at playhead</div>
-          <div className="live__chips">
-            <span className="chip">{state.setRepCount} reps</span>
-            <span className="chip">peak {state.peakVelocity.toFixed(2)}</span>
-            {state.analysisStatus === 'done' && (
-              <span
-                className={`chip ${
-                  state.detectionRate < 0.7
-                    ? 'chip--bad'
-                    : state.detectionRate < 0.9
-                      ? 'chip--warn'
-                      : 'chip--good'
-                }`}
-              >
-                track {Math.round(state.detectionRate * 100)}%
-              </span>
-            )}
-          </div>
+          {done && (
+            <>
+              <div className={`velocity velocity--compact ${velocityClass}`}>
+                {state.velocity.toFixed(2)}
+              </div>
+              <div className="velocity__label">m/s · at playhead</div>
+              {state.detectionRate > 0 && (
+                <div className="live__chips">
+                  <span
+                    className={`chip ${
+                      state.detectionRate < 0.7
+                        ? 'chip--bad'
+                        : state.detectionRate < 0.9
+                          ? 'chip--warn'
+                          : 'chip--good'
+                    }`}
+                  >
+                    track {Math.round(state.detectionRate * 100)}%
+                  </span>
+                  <span className="chip">peak {state.peakVelocity.toFixed(2)}</span>
+                </div>
+              )}
+            </>
+          )}
         </div>
 
         <footer className="live__bottom">
@@ -219,14 +213,19 @@ export default function LiveTraining() {
             onRestart={() => engine.restart()}
             onSeek={(t) => engine.seek(t)}
           />
-          <button
-            type="button"
-            className="end-set"
-            onClick={handleEndSet}
-            disabled={state.setRepCount === 0}
-          >
-            ⏹ End Set
-          </button>
+          {done && (
+            <ResultsPanel
+              metrics={state.metrics}
+              chart={state.chart}
+              repSpans={state.repSpans}
+              duration={state.duration}
+              currentTime={state.currentTime}
+              targetVelocity={targetVelocity}
+              saved={state.saved}
+              onSeek={(t) => engine.seek(t)}
+              onSave={handleSaveSet}
+            />
+          )}
         </footer>
       </div>
 
@@ -234,6 +233,9 @@ export default function LiveTraining() {
         visible={showPlatePicker}
         videoWidth={state.videoWidth}
         videoHeight={state.videoHeight}
+        currentTime={state.currentTime}
+        duration={state.duration}
+        onScrub={(t) => engine.seek(t)}
         onSave={handlePlateSave}
         onCancel={() => setShowPlatePicker(false)}
       />
@@ -248,12 +250,6 @@ export default function LiveTraining() {
         onExerciseChange={setExerciseName}
         onLoadChange={setLoadKg}
         onTargetVelocityChange={setTargetVelocity}
-      />
-      <SetSummarySheet
-        open={showSummary}
-        summary={pendingSave}
-        onSave={handleSave}
-        onClose={handleDiscard}
       />
     </div>
   );

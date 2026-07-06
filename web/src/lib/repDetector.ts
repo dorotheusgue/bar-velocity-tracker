@@ -137,6 +137,8 @@ export class RepDetector {
       rangeOfMotion: rom,
       concentricDuration: duration,
       timestamp: Date.now(),
+      videoStart: this.concentricStart,
+      videoEnd: t,
     };
     for (const l of this.listeners) l(rep);
 

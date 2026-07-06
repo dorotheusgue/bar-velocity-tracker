@@ -74,6 +74,11 @@ export class ColorBlobTracker {
     this.maxRadiusGrowth = o.maxRadiusGrowth ?? 2.5;
   }
 
+  /** True when the seeded plate is grey/black/white — hue is unreliable there. */
+  get isAchromatic(): boolean {
+    return this.hasColor && this.achromatic;
+  }
+
   setMinConfidence(v: number) {
     this.minConfidence = v;
   }

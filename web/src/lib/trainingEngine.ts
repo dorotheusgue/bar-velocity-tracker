@@ -1,5 +1,5 @@
 import { loadVideoFile, type VideoFileHandle } from './videoFile';
-import { drawVideoToContext, probeFrameRate } from './frameWalker';
+import { drawVideoToContext, probeFrameRate, seekTo } from './frameWalker';
 import { ColorBlobTracker } from './colorTracker';
 import { buildTrajectory, type RawTrajectory } from './trajectory';
 import {
@@ -13,7 +13,7 @@ import { CalibrationManager } from './calibration';
 import { KinematicsEngine } from './kinematics';
 import { RepDetector } from './repDetector';
 import { MetricsEngine, type MetricsSnapshot } from './metrics';
-import type { BarPosition, Rep, SetSummary } from '../types';
+import type { BarPosition, SetSummary } from '../types';
 
 export type AnalysisStatus = 'idle' | 'detecting' | 'smoothing' | 'done';
 
@@ -21,6 +21,23 @@ export interface DetectorTuning {
   hueTolerance: number;
   satMin: number;
   minConfidence: number;
+}
+
+export interface PathPoint {
+  x: number; // video pixels
+  y: number;
+  t: number; // video time (s)
+}
+
+export interface RepSpan {
+  index: number;
+  start: number; // video time (s)
+  end: number;
+}
+
+export interface ChartSeries {
+  t: number[];
+  v: number[]; // m/s, up-positive
 }
 
 export interface TrainingState {
@@ -33,8 +50,13 @@ export interface TrainingState {
   repCount: number;
   phase: string;
   setRepCount: number;
-  position: BarPosition | null; // overlay box at current playback time
+  position: BarPosition | null; // overlay marker at current playback time
+  plateRadiusPx: number;
   metrics: MetricsSnapshot;
+  pathPoints: PathPoint[] | null; // smoothed bar path, video pixels
+  chart: ChartSeries | null; // downsampled velocity series
+  repSpans: RepSpan[];
+  saved: boolean;
   notice: string | null;
   lastError: string | null;
   videoWidth: number;
@@ -44,21 +66,22 @@ export interface TrainingState {
   isPaused: boolean;
   currentTime: number;
   duration: number;
-  detectionRate: number; // 0..1, drives the motion-blur warning
+  detectionRate: number; // 0..1
   medianConfidence: number;
   dropAccel: number; // strongest downward accel (g-check)
 }
 
 /**
- * Upload-only, offline two-pass velocity analyzer.
+ * Upload-only, offline two-pass velocity analyzer (Metric-style
+ * record-then-analyze):
  *
- *   Pass 1 (detect): walk every frame deterministically, locate the plate with
- *     a known-radius circle detector, accumulate a raw pixel trajectory.
- *   Pass 2 (analyze): zero-phase Savitzky–Golay smoothing + derivative over the
- *     full trajectory, then replay into the existing rep detector + metrics.
+ *   Pass 1 (detect): walk every frame — fast sequential decode with seek
+ *     backfill — locating the plate with the colour-blob tracker.
+ *   Pass 2 (analyze): zero-phase Savitzky–Golay smoothing + derivative over
+ *     the full trajectory, replayed into the existing rep detector + metrics.
  *
- * No real-time loop, no causal filtering, no dropped frames → no lag, no peak
- * clipping, and the same clip yields the same numbers every run.
+ * After analysis the engine exposes the full bar path, a velocity series with
+ * per-rep spans, and per-playhead lookups for the review overlay.
  */
 export class TrainingEngine {
   readonly calibration = new CalibrationManager();
@@ -78,17 +101,16 @@ export class TrainingEngine {
   private abort: AbortController | null = null;
 
   private seedCenter: { x: number; y: number } | null = null;
+  private seedTime = 0; // video time of the frame the plate was marked on
   private radiusPx = 0;
+  private probedFps: number | null = null;
 
   private listeners = new Set<(s: TrainingState) => void>();
-  private repListeners = new Set<(r: Rep) => void>();
-  private summaryListeners = new Set<(s: SetSummary) => void>();
 
   exerciseName = 'Back Squat';
   loadKg = 0;
   targetVelocity = 0.6;
 
-  // Tuning (persisted by the UI; applied on (re)analyze).
   detectorTuning: DetectorTuning = { hueTolerance: 18, satMin: 0.25, minConfidence: 0.35 };
   smoothing: Required<SmoothingOptions> = {
     polyOrder: 2,
@@ -108,7 +130,12 @@ export class TrainingEngine {
     phase: 'idle',
     setRepCount: 0,
     position: null,
+    plateRadiusPx: 0,
     metrics: this.metrics.snapshot(),
+    pathPoints: null,
+    chart: null,
+    repSpans: [],
+    saved: false,
     notice: null,
     lastError: null,
     videoWidth: 0,
@@ -131,14 +158,7 @@ export class TrainingEngine {
 
     this.kinematics = new KinematicsEngine(this.calibration);
     this.repDetector = new RepDetector(this.kinematics);
-
-    this.repDetector.onRep((rep) => {
-      this.metrics.append(rep);
-      for (const l of this.repListeners) l(rep);
-    });
-    this.metrics.onSetSummary((s) => {
-      for (const l of this.summaryListeners) l(s);
-    });
+    this.repDetector.onRep((rep) => this.metrics.append(rep));
   }
 
   // MARK: - Subscriptions
@@ -148,14 +168,7 @@ export class TrainingEngine {
     listener(this.state);
     return () => void this.listeners.delete(listener);
   }
-  onRep(listener: (r: Rep) => void): () => void {
-    this.repListeners.add(listener);
-    return () => void this.repListeners.delete(listener);
-  }
-  onSetSummary(listener: (s: SetSummary) => void): () => void {
-    this.summaryListeners.add(listener);
-    return () => void this.summaryListeners.delete(listener);
-  }
+
   getState(): TrainingState {
     return this.state;
   }
@@ -176,6 +189,7 @@ export class TrainingEngine {
       facing: 'environment',
       resolution: `${this.file.width}x${this.file.height}-file`,
     });
+    this.probedFps = null;
     this.resetAnalysis();
     this.attachVideoListeners(video);
 
@@ -191,29 +205,13 @@ export class TrainingEngine {
       currentTime: 0,
       duration: this.file.duration,
       lastError: null,
-      notice: 'Mark a plate to start.',
+      notice: 'Scrub to a clear frame, then fit the square on a plate.',
       position: null,
+      pathPoints: null,
+      chart: null,
+      repSpans: [],
+      saved: false,
       metrics: this.metrics.snapshot(),
-    });
-  }
-
-  unloadFile() {
-    this.disposeSource();
-    this.resetAnalysis();
-    this.update({
-      hasVideo: false,
-      needsPlate: true,
-      analysisStatus: 'idle',
-      analysisProgress: 0,
-      filename: null,
-      videoWidth: 0,
-      videoHeight: 0,
-      isPaused: true,
-      currentTime: 0,
-      duration: 0,
-      position: null,
-      velocity: 0,
-      notice: null,
     });
   }
 
@@ -221,20 +219,18 @@ export class TrainingEngine {
 
   /**
    * The user fits a square over the plate. `centerVideo` is its centre and
-   * `radiusPx` is half its side (= plate radius), both in video pixels. The
-   * square side maps to the plate diameter for scale; its interior is the
-   * colour sample.
+   * `radiusPx` half its side (= plate radius), in video pixels. The square
+   * side maps to the plate diameter for scale; its interior is the colour
+   * sample. The frame it was marked on is remembered so re-analyses re-seed
+   * the colour from the *same* frame, not wherever the playhead happens to be.
    */
-  selectPlate(
-    centerVideo: { x: number; y: number },
-    radiusPx: number,
-    diameterMeters: number
-  ) {
+  selectPlate(centerVideo: { x: number; y: number }, radiusPx: number, diameterMeters: number) {
     if (!this.video) return;
     const edge = { x: centerVideo.x + radiusPx, y: centerVideo.y };
     this.calibration.calibrateFromPlate(centerVideo, edge, diameterMeters);
     this.radiusPx = Math.max(4, radiusPx);
     this.seedCenter = { x: centerVideo.x, y: centerVideo.y };
+    this.seedTime = this.video.currentTime;
 
     this.detector = new ColorBlobTracker({
       radiusPx: this.radiusPx,
@@ -242,11 +238,10 @@ export class TrainingEngine {
       satMin: this.detectorTuning.satMin,
       minConfidence: this.detectorTuning.minConfidence,
     });
-    // Seed colour from the frame the user marked.
     drawVideoToContext(this.video, this.ctx);
     this.detector.seed(this.ctx, this.seedCenter);
 
-    this.update({ needsPlate: false });
+    this.update({ needsPlate: false, plateRadiusPx: this.radiusPx });
     void this.analyze();
   }
 
@@ -260,22 +255,28 @@ export class TrainingEngine {
     const signal = this.abort.signal;
 
     this.resetAnalysis();
-    this.detector.reset();
-    drawVideoToContext(this.video, this.ctx);
-    this.detector.seed(this.ctx, this.seedCenter);
-
     this.update({
       analysisStatus: 'detecting',
       analysisProgress: 0,
-      notice: 'Analysing… detecting the plate in every frame.',
+      notice: 'Analysing… tracking the plate through every frame.',
       metrics: this.metrics.snapshot(),
       setRepCount: 0,
       repCount: 0,
+      saved: false,
     });
 
     try {
-      const fps = await probeFrameRate(this.video);
+      const fps = this.probedFps ?? (await probeFrameRate(this.video));
+      this.probedFps = fps;
       this.update({ fps });
+      if (signal.aborted) return;
+
+      // Re-seed the colour from the exact frame the user marked — the probe
+      // and any prior analysis have moved the playhead since then.
+      await seekTo(this.video, this.seedTime);
+      drawVideoToContext(this.video, this.ctx);
+      this.detector.reset();
+      this.detector.seed(this.ctx, this.seedCenter);
 
       this.raw = await buildTrajectory(this.video, this.ctx, this.detector, {
         fps,
@@ -284,10 +285,7 @@ export class TrainingEngine {
         onProgress: (frac) => this.update({ analysisProgress: frac }),
         signal,
       });
-      if (signal.aborted) {
-        this.analyzing = false;
-        return;
-      }
+      if (signal.aborted) return;
 
       this.update({ analysisStatus: 'smoothing', notice: 'Analysing… smoothing trajectory.' });
       this.runPass2();
@@ -309,7 +307,6 @@ export class TrainingEngine {
 
   private runPass2() {
     if (!this.raw) return;
-    // Reset the downstream chain, then replay the freshly smoothed stream.
     this.kinematics.reset();
     this.repDetector.reset();
     this.metrics.clear();
@@ -319,7 +316,30 @@ export class TrainingEngine {
 
     const peak = this.smoothed.velocity.reduce((m, v) => Math.max(m, v), 0);
     const detectionRate = this.smoothed.detectionRate;
-    const notice = this.qualityNotice(detectionRate, peak);
+
+    // Bar path in video pixels from the smoothed (zero-phase) trajectory,
+    // downsampled for rendering. Invert the px→m mapping used in Pass 2.
+    const mpp = this.calibration.metersPerPixel ?? 0;
+    const total = this.smoothed.t.length;
+    const step = Math.max(1, Math.ceil(total / 600));
+    const pathPoints: PathPoint[] = [];
+    const chartT: number[] = [];
+    const chartV: number[] = [];
+    for (let i = 0; i < total; i += step) {
+      if (mpp > 0) {
+        pathPoints.push({
+          x: this.smoothed.xMeters[i] / mpp,
+          y: -this.smoothed.yMeters[i] / mpp,
+          t: this.smoothed.t[i],
+        });
+      }
+      chartT.push(this.smoothed.t[i]);
+      chartV.push(this.smoothed.velocity[i]);
+    }
+
+    const repSpans: RepSpan[] = this.metrics.reps
+      .filter((r) => r.videoStart != null && r.videoEnd != null)
+      .map((r) => ({ index: r.index, start: r.videoStart!, end: r.videoEnd! }));
 
     this.update({
       analysisStatus: 'done',
@@ -329,24 +349,37 @@ export class TrainingEngine {
       setRepCount: this.metrics.reps.length,
       phase: this.repDetector.phase,
       metrics: this.metrics.snapshot(),
+      pathPoints: pathPoints.length > 1 ? pathPoints : null,
+      chart: chartT.length > 1 ? { t: chartT, v: chartV } : null,
+      repSpans,
+      saved: false,
       detectionRate,
       medianConfidence: this.smoothed.medianConfidence,
       dropAccel: maxDownwardAccel(this.smoothed),
-      notice,
+      notice: this.qualityNotice(detectionRate, peak),
     });
     this.overlayLookup(this.video?.currentTime ?? 0);
   }
 
   private qualityNotice(detectionRate: number, peak: number): string | null {
+    const achromaticHint =
+      this.detector?.isAchromatic && detectionRate < 0.9
+        ? ' This plate has no distinct colour — bright tape on the bar end tracks far better.'
+        : '';
     if (detectionRate < 0.7) {
-      return 'Tracking was patchy — the plate may be blurred or leaving frame. Record side-on, well-lit, and use a higher shutter speed for fast lifts.';
+      return (
+        'Tracking was patchy — the plate may be blurred or leaving frame.' +
+        achromaticHint +
+        ' Record side-on, well-lit, high shutter speed for fast lifts.'
+      );
+    }
+    if (this.repDetector.repCount === 0) {
+      return 'No reps detected. Re-fit the square (📏) or check the clip shows a full rep.';
     }
     if (peak > 2.0 && this.smoothed && this.smoothed.medianConfidence < 0.45) {
       return 'Fast lift with weak tracking — a higher camera shutter speed (less motion blur) will improve accuracy.';
     }
-    if (this.repDetector.repCount === 0) {
-      return 'No reps detected. Re-pick the plate (📏) or check the clip shows a full rep.';
-    }
+    if (achromaticHint) return achromaticHint.trim();
     return null;
   }
 
@@ -392,22 +425,30 @@ export class TrainingEngine {
     v.currentTime = 0;
   }
 
-  // MARK: - Set lifecycle
+  // MARK: - Saving
 
-  endSet(): SetSummary | null {
-    const summary = this.metrics.endSet({
+  /**
+   * Build a SetSummary from the current metrics without clearing them, so the
+   * results stay on screen after saving. Returns null when there is nothing
+   * to save.
+   */
+  saveSet(): SetSummary | null {
+    const snap = this.metrics.snapshot();
+    if (snap.reps.length === 0) return null;
+    const summary: SetSummary = {
+      id: crypto.randomUUID(),
+      reps: snap.reps,
+      velocityLossPercent: snap.velocityLossPercent,
+      averageMCV: snap.averageMCV,
+      averagePeak: snap.averagePeak,
+      bestRepId: snap.bestRepId,
+      startedAt: snap.reps[0].timestamp,
+      endedAt: Date.now(),
       exerciseName: this.exerciseName,
       loadKg: this.loadKg,
       targetVelocity: this.targetVelocity,
-    });
-    if (summary) {
-      if (this.video && !this.video.paused) this.video.pause();
-      this.update({
-        setRepCount: 0,
-        repCount: this.repDetector.repCount,
-        metrics: this.metrics.snapshot(),
-      });
-    }
+    };
+    this.update({ saved: true });
     return summary;
   }
 
@@ -416,7 +457,7 @@ export class TrainingEngine {
   private attachVideoListeners(video: HTMLVideoElement) {
     this.detachVideoListeners();
     const sync = () => {
-      if (this.analyzing) return; // analysis drives its own seeks
+      if (this.analyzing) return; // analysis drives its own seeks/playback
       this.overlayLookup(video.currentTime);
       this.update({
         isPaused: video.paused,
@@ -424,17 +465,10 @@ export class TrainingEngine {
         duration: Number.isFinite(video.duration) ? video.duration : this.state.duration,
       });
     };
-    const pairs: Array<[string, EventListener]> = [
-      ['play', sync],
-      ['pause', sync],
-      ['timeupdate', sync],
-      ['seeked', sync],
-      ['durationchange', sync],
-      ['ended', sync],
-    ];
-    for (const [event, handler] of pairs) {
-      video.addEventListener(event, handler);
-      this.videoListeners.push({ event, handler });
+    const events = ['play', 'pause', 'timeupdate', 'seeked', 'durationchange', 'ended'];
+    for (const event of events) {
+      video.addEventListener(event, sync);
+      this.videoListeners.push({ event, handler: sync });
     }
   }
 
@@ -446,12 +480,11 @@ export class TrainingEngine {
     this.videoListeners = [];
   }
 
-  /** Look up the nearest trajectory sample to `time` and set the overlay box + velocity. */
+  /** Look up the nearest trajectory sample to `time` for the overlay + readout. */
   private overlayLookup(time: number) {
     if (!this.smoothed || !this.raw) return;
     const { t, velocity } = this.smoothed;
     if (t.length === 0) return;
-    // Nearest sample (uniform spacing → direct index).
     let i = Math.round(time * this.smoothed.fps);
     if (i < 0) i = 0;
     if (i >= t.length) i = t.length - 1;
@@ -494,6 +527,8 @@ export class TrainingEngine {
     this.detachVideoListeners();
     this.file?.dispose();
     this.file = null;
+    this.detector = null;
+    this.seedCenter = null;
   }
 
   private rafScheduled = false;

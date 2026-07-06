@@ -35,6 +35,9 @@ export interface Rep {
   rangeOfMotion: number; // meters
   concentricDuration: number; // seconds
   timestamp: number; // ms (Date.now())
+  /** Video-time span of the concentric phase (seconds), set by offline analysis. */
+  videoStart?: number;
+  videoEnd?: number;
 }
 
 export interface SetSummary {
